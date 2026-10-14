@@ -624,12 +624,16 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 			}
 			n := min(q.len, bound)
 			for i := 0; i < n; i++ {
-				batch[i] = q.frames[(q.head+i)%len(q.frames)]
+				slot := (q.head + i) % len(q.frames)
+				batch[i] = q.frames[slot]
+				q.frames[slot] = nil
 			}
 			q.head = (q.head + n) % len(q.frames)
 			q.len -= n
 			q.mu.Unlock()
-			if err := writeBatch(n); err != nil {
+			err := writeBatch(n)
+			clear(batch[:n])
+			if err != nil {
 				return
 			}
 		}
@@ -883,6 +887,10 @@ func newAuthzCache() *authzCache {
 func (c *authzCache) store(key authzKey, userID, sess, member, userVersion int64, responseVersion uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.storeLocked(key, userID, sess, member, userVersion, responseVersion)
+}
+
+func (c *authzCache) storeLocked(key authzKey, userID, sess, member, userVersion int64, responseVersion uint64) {
 	if e := c.m[key]; e != nil {
 		e.userID = userID
 		e.sess, e.member, e.userVersion = sess, member, userVersion
@@ -910,7 +918,7 @@ func (c *authzCache) store(key authzKey, userID, sess, member, userVersion int64
 // left at user 0 is unauthorized and cancelled by the caller. Query errors
 // resolve every pending recipient of that room as unauthorized but store
 // nothing, so a transient read failure cannot poison the cache.
-func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
+func (h *Hub) authorize(ctx context.Context, recipients []recipient, scratch *publishScratch) {
 	sess := h.db.SessionVersion()
 	member := h.db.MembershipVersion()
 	userVersion := h.db.UserVersion()
@@ -920,11 +928,14 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 	// observed, this pass neither serves nor stores cache entries.
 	responseVersion, versionErr := h.db.ResponseVersion(ctx)
 	cacheable := versionErr == nil
-	type miss struct {
-		index int
-		key   authzKey
+	if scratch.authzSeen == nil {
+		scratch.authzSeen = make(map[authzKey]int64)
 	}
-	var misses []miss
+	seen := scratch.authzSeen
+	if cap(scratch.authzMisses) < len(recipients) {
+		scratch.authzMisses = make([]authzKey, 0, len(recipients))
+	}
+	misses := scratch.authzMisses[:0]
 	h.authz.mu.Lock()
 	// ENGINE-61: the recipients of one publish overwhelmingly share a few
 	// (room, token) keys (at 1000 clients a room publish is one token), and
@@ -952,8 +963,13 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 		if j < memoLen {
 			continue
 		}
+		if user, ok := seen[key]; ok {
+			r.user = user
+			continue
+		}
 		if e := h.authz.m[key]; e != nil && cacheable && e.sess == sess && e.member == member && e.userVersion == userVersion && e.responseVersion == responseVersion {
 			r.user = e.userID
+			seen[key] = e.userID
 			if memoLen < len(memo) {
 				memo[memoLen] = struct {
 					key  authzKey
@@ -963,45 +979,60 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 			}
 			continue
 		}
-		misses = append(misses, miss{i, key})
+		seen[key] = 0
+		misses = append(misses, key)
 	}
 	h.authz.mu.Unlock()
+	scratch.authzMisses = misses
 	if len(misses) == 0 {
 		return
 	}
-	// Batch one query per distinct room for the missing tokens.
-	type roomQuery struct {
-		tokens  []string
-		allowed map[string]int64
-	}
-	rooms := make(map[int64]*roomQuery, 1)
-	for _, m := range misses {
-		q := rooms[m.key.room]
-		if q == nil {
-			q = &roomQuery{}
-			rooms[m.key.room] = q
+	// Group distinct keys in caller-owned scratch; multi-tab sessions appear
+	// once in SQL and once in the cache-store pass.
+	slices.SortFunc(misses, func(a, b authzKey) int {
+		if a.room < b.room {
+			return -1
 		}
-		q.tokens = append(q.tokens, m.key.token)
-	}
-	for room, q := range rooms {
-		allowed, err := h.db.AuthorizedSessions(ctx, q.tokens, room)
-		if err != nil {
-			allowed = nil
+		if a.room > b.room {
+			return 1
 		}
-		q.allowed = allowed
-	}
-	// Resolve every miss from the fresh query results and store them back
-	// under the generations the queries ran with. The cache lock is taken
-	// per store, not across the pass: a store on a revoked result can never
-	// be served, because its generations are the pre-revocation ones and a
-	// lookup requires all three to match. Query errors store nothing, so a
-	// transient read failure cannot poison the cache with negatives.
-	for _, m := range misses {
-		allowed := rooms[m.key.room].allowed
-		recipients[m.index].user = allowed[m.key.token]
-		if allowed != nil && cacheable {
-			h.authz.store(m.key, allowed[m.key.token], sess, member, userVersion, responseVersion)
+		return 0
+	})
+	for start := 0; start < len(misses); {
+		end := start + 1
+		for end < len(misses) && misses[end].room == misses[start].room {
+			end++
 		}
+		tokens := scratch.tokens[:0]
+		for _, key := range misses[start:end] {
+			tokens = append(tokens, key.token)
+		}
+		scratch.tokens = tokens
+		allowed, err := h.db.AuthorizedSessions(ctx, tokens, misses[start].room)
+		for _, key := range misses[start:end] {
+			if err != nil {
+				seen[key] = -1
+			} else {
+				seen[key] = allowed[key.token]
+			}
+		}
+		start = end
+	}
+	if cacheable {
+		h.authz.mu.Lock()
+		for _, key := range misses {
+			if user := seen[key]; user >= 0 {
+				h.authz.storeLocked(key, user, sess, member, userVersion, responseVersion)
+			}
+		}
+		h.authz.mu.Unlock()
+	}
+	for i := range recipients {
+		user := seen[authzKey{room: recipients[i].room, token: recipients[i].client.token}]
+		if user < 0 {
+			user = 0
+		}
+		recipients[i].user = user
 	}
 }
 
@@ -1023,17 +1054,46 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 // including a generic publication, since the pool hands out one kind of
 // scratch. Steady state reuses the object and allocates none of it.
 type publishScratch struct {
-	wrap    []byte
-	recips  []recipient
-	tokens  []string
-	targets []int64
-	fresh   []int64
+	authzSeen   map[authzKey]int64
+	authzMisses []authzKey
+	wrap        []byte
+	recips      []recipient
+	tokens      []string
+	targets     []int64
+	fresh       []int64
 }
 
 // reset truncates every buffer for the next publication. The result buffers in
 // particular must be truncated, never merely appended to: a target left
 // eligible by an earlier publication would otherwise filter as eligible now.
 func (s *publishScratch) reset() {
+	clear(s.recips[:cap(s.recips)])
+	clear(s.tokens[:cap(s.tokens)])
+	clear(s.authzMisses[:cap(s.authzMisses)])
+	if len(s.authzSeen) > 4096 {
+		s.authzSeen = nil
+	} else {
+		clear(s.authzSeen)
+	}
+	if cap(s.recips) > 4096 {
+		s.recips = nil
+	}
+	if cap(s.tokens) > 4096 {
+		s.tokens = nil
+	}
+	if cap(s.authzMisses) > 4096 {
+		s.authzMisses = nil
+	}
+	if cap(s.wrap) > 1<<20 {
+		s.wrap = nil
+	}
+	if cap(s.targets) > 4096 {
+		s.targets = nil
+	}
+	if cap(s.fresh) > 4096 {
+		s.fresh = nil
+	}
+	s.authzMisses = s.authzMisses[:0]
 	s.wrap = s.wrap[:0]
 	s.recips = s.recips[:0]
 	s.tokens = s.tokens[:0]
@@ -1077,6 +1137,7 @@ func (h *Hub) publish(ctx context.Context, room int64, name string, message any)
 	recipients := scratch.recips[:0]
 	defer func() {
 		scratch.wrap, scratch.recips = wrap, recipients
+		scratch.reset()
 		publishScratchPool.Put(scratch)
 	}()
 	// Snapshot the recipients from the publish index under the hub lock only;
@@ -1111,7 +1172,7 @@ func (h *Hub) publish(ctx context.Context, room int64, name string, message any)
 		return
 	}
 	if h.fast {
-		h.authorize(ctx, recipients)
+		h.authorize(ctx, recipients, scratch)
 	} else {
 		// Legacy: recheck every publication, batching distinct sessions per
 		// room (the pre-ENGINE-40b behavior, unchanged).
@@ -1302,8 +1363,7 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	// member read and an empty room return above, before the pool is touched
 	// (a cold pool allocates the whole scratch).
 	scratch := publishScratchPool.Get().(*publishScratch)
-	scratch.reset()
-	defer publishScratchPool.Put(scratch)
+	defer func() { scratch.reset(); publishScratchPool.Put(scratch) }()
 	h.mu.RLock()
 	scope := ""
 	for _, member := range members {

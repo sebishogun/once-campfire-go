@@ -54,7 +54,7 @@ type searchResult struct {
 type searchResultCache struct {
 	mu      sync.Mutex
 	entries map[[32]byte]*listElement
-	byUser  map[int64]map[[32]byte]struct{}
+	byUser  map[int64]*listElement
 	order   searchList
 	bytes   int
 	limit   int
@@ -64,12 +64,13 @@ type searchResultCache struct {
 // charged byte size and the immutable result. Entries are never mutated after
 // publication; a replacement publishes a fresh element.
 type listElement struct {
-	key    [32]byte
-	user   int64
-	bytes  int
-	result searchResult
-	prev   *listElement
-	next   *listElement
+	key                [32]byte
+	user               int64
+	bytes              int
+	result             searchResult
+	prev               *listElement
+	next               *listElement
+	userPrev, userNext *listElement
 }
 
 // searchList is a minimal intrusive doubly-linked list for the LRU order
@@ -118,9 +119,9 @@ func (l *searchList) moveToFront(e *listElement) {
 // 16 MiB keeps a few hundred distinct queries in play.
 const searchCacheBudget = 16 << 20
 
-// searchEntryOverhead is the fixed per-entry bookkeeping charge, matching the
-// fragment cache's 240-byte convention.
-const searchEntryOverhead = 240
+// searchEntryOverhead extends the fragment cache's 240-byte convention with
+// intrusive user links and an amortized user-index map slot.
+const searchEntryOverhead = 304
 
 // messageFixedBytes approximates the struct cost of one database.Message
 // (three int64s, three string headers, two time.Times).
@@ -143,7 +144,7 @@ func searchResultBytes(r searchResult) int {
 // the API usable without a nil check (CAMPFIRE_SEARCH_CACHE_MB=0 does the
 // same to the result cache).
 func newSearchResultCache(limit int) *searchResultCache {
-	return &searchResultCache{entries: make(map[[32]byte]*listElement), byUser: make(map[int64]map[[32]byte]struct{}), limit: limit}
+	return &searchResultCache{entries: make(map[[32]byte]*listElement), byUser: make(map[int64]*listElement), limit: limit}
 }
 
 // searchCacheKey digests the four key components in place; the digest is the
@@ -197,17 +198,16 @@ func (c *searchResultCache) put(user int64, query string, corpus, membership int
 	if previous, ok := c.entries[key]; ok {
 		c.bytes -= previous.bytes
 		c.order.remove(previous)
-		delete(c.byUser[previous.user], key)
+		c.unlinkUser(previous)
 	}
 	e := &listElement{key: key, user: user, bytes: size, result: result}
 	c.entries[key] = e
 	c.order.pushFront(e)
-	users := c.byUser[user]
-	if users == nil {
-		users = make(map[[32]byte]struct{})
-		c.byUser[user] = users
+	e.userNext = c.byUser[user]
+	if e.userNext != nil {
+		e.userNext.userPrev = e
 	}
-	users[key] = struct{}{}
+	c.byUser[user] = e
 	c.bytes += size
 	if c.bytes > c.limit {
 		for c.bytes > c.limit*3/4 {
@@ -217,25 +217,34 @@ func (c *searchResultCache) put(user int64, query string, corpus, membership int
 			}
 			c.bytes -= oldest.bytes
 			delete(c.entries, oldest.key)
-			delete(c.byUser[oldest.user], oldest.key)
+			c.unlinkUser(oldest)
 			c.order.remove(oldest)
 		}
 	}
 }
 
-// purgeUser drops every cached page of one user. POST /searches and DELETE
-// /searches/clear change the recent-searches list, which carries no version
-// of its own, so both purge the user's entries to keep the cached recent list
-// current.
+// unlinkUser removes an entry from the user's intrusive index while c.mu is held.
+func (c *searchResultCache) unlinkUser(e *listElement) {
+	if e.userPrev != nil {
+		e.userPrev.userNext = e.userNext
+	} else if e.userNext != nil {
+		c.byUser[e.user] = e.userNext
+	} else {
+		delete(c.byUser, e.user)
+	}
+	if e.userNext != nil {
+		e.userNext.userPrev = e.userPrev
+	}
+}
+
+// purgeUser drops every cached page after the user's recent-search list changes.
 func (c *searchResultCache) purgeUser(user int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for key := range c.byUser[user] {
-		if e, ok := c.entries[key]; ok {
-			c.bytes -= e.bytes
-			c.order.remove(e)
-			delete(c.entries, key)
-		}
+	for e := c.byUser[user]; e != nil; e = e.userNext {
+		c.bytes -= e.bytes
+		c.order.remove(e)
+		delete(c.entries, e.key)
 	}
 	delete(c.byUser, user)
 }

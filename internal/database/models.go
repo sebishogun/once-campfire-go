@@ -410,21 +410,16 @@ func (d *DB) createMessage(
 				return created, err
 			}
 		}
+		if err := tx.InsertSearchIndex(ctx, created.ID, plain); err != nil {
+			return created, err
+		}
 		return created, nil
 	}
-	// afterCommit runs the statements the Rust port runs in its after_commit
-	// hooks, in the documented order: the search row first, then the unread
-	// bump. On the direct and in-line paths it runs inside the job's own
-	// transaction; on the queued path the writer runs it after the shared
-	// commit, in its own bounded second-phase transaction (ENGINE-45
-	// batching), so a batch's after work commits behind the primary commit and
-	// the crash window ENGINE-31 documents — a committed message row without
-	// its index and unread rows — is unchanged.
+	// Only unread work remains in the queued second phase. The FTS row must
+	// commit with the body: a concurrent edit/delete after that commit must
+	// never be overwritten by replaying captured creation text.
 	afterCommit := func(ctx context.Context, conn jobTx, created Message) error {
 		stamp := Stamp(now)
-		if err := conn.InsertSearchIndex(ctx, created.ID, plain); err != nil {
-			return err
-		}
 		return conn.BumpUnread(ctx, room, user, stamp, Stamp(now.Add(-60*time.Second)))
 	}
 	if d.writer == nil {

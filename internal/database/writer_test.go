@@ -598,14 +598,8 @@ func TestWriteQueueWebhookReply(t *testing.T) {
 	})
 }
 
-// TestWriteQueueAfterCommitFailure pins the queued path's after-commit
-// contract: the message row commits in the shared transaction, and a failure
-// of the search-index insert after commit is reported to the caller while the
-// message stays — the same window the Rust port's after_commit hooks have
-// (the in-line and direct paths roll the row back instead, because their
-// after-commit statements commit atomically with the row; see
-// TestWriteQueueAdaptiveAfterCommitAtomicity).
-func TestWriteQueueAfterCommitFailure(t *testing.T) {
+// An index failure rolls back message/body on the queued path too.
+func TestWriteQueueIndexFailureAtomicity(t *testing.T) {
 	runBothLanes(t, func(t *testing.T) {
 		d, owner, _, _, room := seededWriterTest(t)
 		ctx := context.Background()
@@ -614,8 +608,7 @@ func TestWriteQueueAfterCommitFailure(t *testing.T) {
 		}
 		// Force the queued path: a blocker job claims the lane and holds the
 		// write connection inside its transaction, so the post below can only be
-		// batched behind it. Releasing the gate lets the batch commit the post's
-		// message row before the caller's after-commit transaction fails.
+		// batched behind it. Releasing the gate runs the failing primary write.
 		gate := make(chan struct{})
 		blocker := &messageJob{
 			ctx:  ctx,
@@ -647,8 +640,8 @@ func TestWriteQueueAfterCommitFailure(t *testing.T) {
 		if postErr == nil {
 			t.Fatal("expected the failed index insert to surface")
 		}
-		if n, err := d.readInt(ctx, "SELECT count(*) FROM messages WHERE client_message_id='keeps-row'"); err != nil || n != 1 {
-			t.Fatalf("message row after after-commit failure = %d %v, want 1 (committed before the index)", n, err)
+		if n, err := d.readInt(ctx, "SELECT count(*) FROM messages WHERE client_message_id='keeps-row'"); err != nil || n != 0 {
+			t.Fatalf("message row after index failure = %d %v, want 0 (rolled back with index)", n, err)
 		}
 		_ = m
 	})

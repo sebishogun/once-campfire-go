@@ -300,9 +300,9 @@ func (w *messageWriter) submit(job *messageJob) error {
 	if !w.busy && len(w.jobs) == 0 {
 		// In-line: the lane is idle, so run the job here instead of waking
 		// the loop. The busy mark keeps writers that arrive while this one
-		// runs on the queue, where the group commit can batch them; the
-		// single connection serializes the transaction against any batch
-		// the loop takes in between.
+		// runs on the queue, where the group commit can batch them. nextJob
+		// and the shutdown drain wait for this owner's release, including
+		// its checkpoint check, before taking another job.
 		w.busy = true
 		w.mu.Unlock()
 		w.runInline(job)
@@ -310,6 +310,10 @@ func (w *messageWriter) submit(job *messageJob) error {
 		w.inflight--
 		w.busy = false
 		w.mu.Unlock()
+		select {
+		case w.wake <- struct{}{}:
+		default:
+		}
 		return nil
 	}
 	select {
@@ -397,6 +401,15 @@ func (w *messageWriter) nextJob() (job *messageJob, stop bool) {
 		default:
 		}
 		w.mu.Lock()
+		if w.busy {
+			w.mu.Unlock()
+			select {
+			case <-w.stop:
+				return nil, true
+			case <-w.wake:
+			}
+			continue
+		}
 		select {
 		case job := <-w.jobs:
 			w.busy = true
@@ -492,11 +505,22 @@ func (w *messageWriter) runInline(job *messageJob) {
 // finish.
 func (w *messageWriter) drain() {
 	for {
+		w.mu.Lock()
+		if w.busy {
+			w.mu.Unlock()
+			runtime.Gosched()
+			continue
+		}
 		select {
 		case job := <-w.jobs:
+			w.busy = true
+			w.mu.Unlock()
 			w.runBatch(job)
-		default:
+			w.walLimit()
 			w.mu.Lock()
+			w.busy = false
+			w.mu.Unlock()
+		default:
 			n := w.inflight
 			w.mu.Unlock()
 			if n == 0 {
