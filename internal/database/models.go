@@ -361,13 +361,9 @@ func (d *DB) createMessage(
 	}
 	// run executes the statements that commit together with the message row:
 	// the authorized creator lookup (membership check and name together),
-	// staged blob, the message itself, the room touch, body and attachment.
-	// The search index and unread bump run as after-commit work around it:
-	// inside the same transaction on the direct and in-line paths, in the
-	// writer's bounded second phase after the shared commit on the queued
-	// path, exactly as the Rust port shapes the same Rails callbacks. The
-	// statements go through the lane's jobTx, so the two lanes run the same
-	// SQL in the same order (the statement-count tests pin both).
+	// staged blob, message, room touch, body, attachment, FTS and unread.
+	// The insert trigger records durable push intent in that same transaction.
+	// A process crash cannot leave primary data without its derived state.
 	run := func(tx jobTx) (Message, error) {
 		created := m
 		// One statement for the authorized creator: the membership check and
@@ -413,14 +409,10 @@ func (d *DB) createMessage(
 		if err := tx.InsertSearchIndex(ctx, created.ID, plain); err != nil {
 			return created, err
 		}
+		if err := tx.BumpUnread(ctx, room, user, stamp, Stamp(now.Add(-60*time.Second))); err != nil {
+			return created, err
+		}
 		return created, nil
-	}
-	// Only unread work remains in the queued second phase. The FTS row must
-	// commit with the body: a concurrent edit/delete after that commit must
-	// never be overwritten by replaying captured creation text.
-	afterCommit := func(ctx context.Context, conn jobTx, created Message) error {
-		stamp := Stamp(now)
-		return conn.BumpUnread(ctx, room, user, stamp, Stamp(now.Add(-60*time.Second)))
 	}
 	if d.writer == nil {
 		err := d.Transaction(ctx, func(tx *sql.Tx) error {
@@ -429,7 +421,7 @@ func (d *DB) createMessage(
 			if m, err = run(lane); err != nil {
 				return err
 			}
-			return afterCommit(ctx, lane, m)
+			return nil
 		})
 		if err == nil {
 			// ENGINE-20/ENGINE-30 registries: bump after the commit so no
@@ -442,25 +434,13 @@ func (d *DB) createMessage(
 		}
 		return m, err
 	}
-	// Queued path: group commit, or the adaptive in-line path when the lane
-	// is idle (the writer decides; the create work is the same either way,
-	// and the in-line path additionally folds afterCommit into the job's own
-	// transaction). The writer runs the after-commit work as a second phase of
-	// its own — bounded transactions after the primary commit, on the writer's
-	// goroutine — so a batch of B messages costs the primary commit plus the
-	// after phase's transactions instead of one after transaction per caller
-	// (ENGINE-45). Results are delivered only after both phases, so a
-	// caller's response is never sent ahead of the message's persistence and
-	// its after-commit work. The search row and the unread bump run on a
-	// context that survives the request disconnecting mid-write (the Rust
-	// after_commit hooks and Rails' after_commit callbacks are not
-	// request-cancellable either); their error is reported to the caller the
-	// way Rails raises from the save that committed.
+	// Both queued group commit and the idle in-line path commit the whole
+	// message atomically. Network publication is best effort; push is replayed
+	// independently from the durable outbox.
 	job := &messageJob{
-		ctx:   ctx,
-		run:   run,
-		after: afterCommit,
-		done:  make(chan messageResult, 1),
+		ctx:  ctx,
+		run:  run,
+		done: make(chan messageResult, 1),
 	}
 	// The commit gate: this caller counts toward Close's drain until its job
 	// has been answered (the writer's after phase included), so Close never

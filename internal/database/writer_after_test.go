@@ -374,8 +374,8 @@ func runPostBurst(t *testing.T, d *DB, owner, room int64, posters int) {
 
 // TestWriteQueueBatchHistogram drives concurrent posts behind a held lane and
 // records the writer's own batch sizes and after-phase commit counts. Every
-// acknowledged message appears in exactly one batch; every batch's after phase
-// is ceil(size/afterBatchLimit) transactions; and a multi-job batch (group
+// acknowledged message appears in exactly one batch; message derived state
+// now commits in the primary transaction, with no after phase; and a multi-job batch (group
 // commit) is observed, which is the whole point of the queue.
 func TestWriteQueueBatchHistogram(t *testing.T) {
 	d, owner, room, ps, cs, mu := observedSeededWriter(t)
@@ -397,7 +397,7 @@ func TestWriteQueueBatchHistogram(t *testing.T) {
 		if size > maxBatch {
 			maxBatch = size
 		}
-		if want := (size + afterBatchLimit - 1) / afterBatchLimit; chunks[i] != want {
+		if want := 0; chunks[i] != want {
 			t.Errorf("batch %d size %d: after transactions = %d, want %d", i, size, chunks[i], want)
 		}
 	}

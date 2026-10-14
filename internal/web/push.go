@@ -47,6 +47,7 @@ func (s *Server) initJobs() {
 		}
 	}
 	s.Push = integrations.NewPushSender(vapid)
+	s.Jobs.RegisterDurable("push", s.drainPushOutbox)
 	s.mux.HandleFunc("GET /users/{user}/push_subscriptions", s.auth(s.pushSubscriptions))
 	s.mux.HandleFunc("POST /users/{user}/push_subscriptions", s.auth(s.pushSubscriptions))
 	s.mux.HandleFunc("DELETE /users/{user}/push_subscriptions/{subscription}", s.auth(s.deletePushSubscription))
@@ -191,10 +192,9 @@ func (s *Server) testPushNotification(w http.ResponseWriter, r *http.Request, u 
 	http.Redirect(w, r, s.origin(r)+pushPath, 302)
 }
 
-// messageCreated broadcasts the unread bumps and schedules push deliveries
-// for a created message. mentioned carries the mentioned user ids the create
-// path already derived from the body's single parse (ENGINE-45b); nil means
-// "derive here", which the bot and webhook callers rely on.
+// messageCreated broadcasts unread bumps and wakes the durable push scan.
+// Delivery rehydrates the message and mentions from persisted state, so the
+// same path works after a crash with no request-local message snapshot.
 //
 // The unread bump owns its budget (deliveryTimeout) and opens it when the hub
 // reports work — a server with no unread subscriber opens no timer, while a
@@ -205,18 +205,61 @@ func (s *Server) messageCreated(message database.Message, room database.Room, me
 	if err := s.Cable.PublishUnreadBump(room.ID, deliveryTimeout); err != nil {
 		slog.Error("unread notification failed", "error", err)
 	}
-	// Web Push is the reference's Room::PushMessageJob (the Rails app's
-	// push_message_job.rb): recipients, badge counts and delivery run on the
-	// job worker, never on the posting request. The request enqueues one job
-	// per message and renders on. mentioned travels with the job when the
-	// create path already derived it; the job derives it itself otherwise
-	// (the bot and webhook callers).
-	if s.Push.VAPID == nil {
-		return
+	// Recipients, badge counts and delivery run off the posting request.
+	// Saturation loses only this wake; periodic scanning recovers the intent.
+	s.Jobs.WakeDurable("push")
+}
+
+// drainPushOutbox runs serialized by the durable job registration. Delivery
+// is at-least-once: a crash after the push service accepts a message but before
+// acknowledgement may repeat it. Disabled push intentionally discards intent.
+// Websocket broadcasts remain best effort and are never replayed.
+func (s *Server) drainPushOutbox(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, pushRequestTimeout)
+	defer cancel()
+	var storage [128]int64
+	for {
+		ids, err := s.DB.DuePush(ctx, storage[:0], len(storage))
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		var first error
+		for _, id := range ids {
+			if s.Push.VAPID != nil {
+				message, err := s.DB.Message(ctx, id)
+				if err == nil {
+					var room database.Room
+					room, err = s.DB.PushRoom(ctx, message.RoomID)
+					if err == nil {
+						err = s.deliverPush(ctx, message, room, nil)
+					}
+				}
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					// The delivery may have spent its query context. Persist retry
+					// backoff with a separate bounded budget before returning.
+					retryCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+					retryErr := s.DB.RetryPush(retryCtx, id)
+					stop()
+					if retryErr != nil {
+						return retryErr
+					}
+					if first == nil {
+						first = err
+					}
+					continue
+				}
+			}
+			if err := s.DB.AckPush(ctx, id); err != nil {
+				return err
+			}
+		}
+		if first != nil {
+			return first
+		}
 	}
-	s.Jobs.Enqueue("push", func(ctx context.Context) error {
-		return s.deliverPush(ctx, message, room, mentioned)
-	})
 }
 
 // pushRequestTimeout bounds one push job's queries and delivery attempts, the
@@ -271,13 +314,15 @@ func (s *Server) deliverPush(ctx context.Context, message database.Message, room
 	for _, subscription := range subscriptions {
 		badge, err := s.DB.UnreadCount(ctx, subscription.UserID)
 		if err != nil {
-			slog.Error("push badge failed", "error", err)
-			continue
+			return err
 		}
 		payload := notificationJSON(title, body, fmt.Sprintf("/rooms/%d", room.ID), badge)
 		if err := s.Push.Send(ctx, subscription.Endpoint, subscription.Key, subscription.Auth, payload); err != nil {
 			if errors.Is(err, integrations.ErrPushGone) || errors.Is(err, integrations.ErrPushPoint) {
-				return s.DB.DeletePushSubscription(ctx, subscription.UserID, subscription.ID)
+				if err := s.DB.DeletePushSubscription(ctx, subscription.UserID, subscription.ID); err != nil {
+					return err
+				}
+				continue
 			}
 			return err
 		}

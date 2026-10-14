@@ -192,6 +192,12 @@ func releaseResponseBuffer(b *responseBuffer) {
 	if b == nil {
 		return
 	}
+	b.clearForPool()
+	responseBufferPool.Put(b)
+}
+
+// clearForPool drops every borrowed body after finish, before pool ownership.
+func (b *responseBuffer) clearForPool() {
 	b.ResponseWriter = nil
 	b.arena = nil
 	b.framed = false
@@ -201,7 +207,11 @@ func releaseResponseBuffer(b *responseBuffer) {
 	b.recordedStatus = 0
 	b.server = nil
 	b.wireEncoding = ""
-	responseBufferPool.Put(b)
+	b.body = nil
+	b.parts = nil
+	clear(b.partsBuf[:])
+	b.encoded = nil
+	b.assembly = nil
 }
 
 var sessionWriterPool = sync.Pool{New: func() any { return &sessionWriter{} }}

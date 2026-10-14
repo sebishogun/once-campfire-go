@@ -376,6 +376,17 @@ func prepare(db *sql.DB) error {
 	if _, err = tx.Exec("CREATE INDEX IF NOT EXISTS index_messages_on_room_id_and_updated_at ON messages(room_id,updated_at)"); err != nil {
 		return err
 	}
+	// Port-owned durable notification intent. The trigger covers both write
+	// lanes in the primary message transaction without another prepare/bind.
+	if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS campfire_push_outbox (
+		message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+		retry_at INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX IF NOT EXISTS campfire_push_outbox_due ON campfire_push_outbox(retry_at,message_id);
+	CREATE TRIGGER IF NOT EXISTS campfire_message_push_outbox AFTER INSERT ON messages
+	BEGIN INSERT INTO campfire_push_outbox(message_id) VALUES (new.id); END;`); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

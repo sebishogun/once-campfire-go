@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/basecamp/once-campfire-go/internal/database"
 	"github.com/basecamp/once-campfire-go/internal/rails"
@@ -44,7 +45,7 @@ const (
 var (
 	frameCachePerKey     = 8       // distinct payloads retained per (scope, identifier)
 	frameCacheMaxEntries = 4096    // global entry bound
-	frameCacheMaxBytes   = 8 << 20 // global payload-byte bound (plus 64B fixed overhead per entry)
+	frameCacheMaxBytes   = 8 << 20 // retained representations, keys and bookkeeping
 )
 
 type frameCacheKey struct{ scope, id string }
@@ -53,6 +54,7 @@ type frameCacheEntry struct {
 	key   frameCacheKey
 	hash  uint64
 	frame *websocket.PreparedMessage
+	bytes int64
 
 	gPrev, gNext *frameCacheEntry // global FIFO: gPrev toward oldest, gNext toward newest
 	kNext        *frameCacheEntry // per-key chain: newest → oldest
@@ -120,18 +122,33 @@ func (fc *frameCache) lookupOrCreate(scope, id string, data []byte) *websocket.P
 	key := frameCacheKey{scope: scope, id: id}
 
 	fc.mu.Lock()
-	defer fc.mu.Unlock()
 
 	for e := fc.byHash[h]; e != nil; e = e.hNext {
 		if e.key == key && bytes.Equal(e.frame.Data(), data) {
+			fc.mu.Unlock()
 			return e.frame
 		}
 	}
+	fc.mu.Unlock()
 
+	// Own exact key storage rather than retaining a substring's larger parent.
+	key = frameCacheKey{scope: strings.Clone(scope), id: strings.Clone(id)}
 	e := &frameCacheEntry{
 		key:   key,
 		hash:  h,
 		frame: websocket.NewPreparedMessage(websocket.MessageText, data),
+	}
+	// Include both immutable payloads, key backing storage, and conservative
+	// map bookkeeping in addition to the entry and prepared-message objects.
+	e.bytes = int64(e.frame.RetainedSize() + int(unsafe.Sizeof(*e)) + len(scope) + len(id) + 128)
+	// Compression is miss work, outside the shared publication lock. Another
+	// publisher may have filled the same payload while this one prepared it.
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	for existing := fc.byHash[h]; existing != nil; existing = existing.hNext {
+		if existing.key == key && bytes.Equal(existing.frame.Data(), data) {
+			return existing.frame
+		}
 	}
 
 	// Insert at the per-key head (newest) and the global tail (newest).
@@ -147,7 +164,7 @@ func (fc *frameCache) lookupOrCreate(scope, id string, data []byte) *websocket.P
 	e.hNext = fc.byHash[h]
 	fc.byHash[h] = e
 	fc.entries++
-	fc.bytes += int64(len(data)) + 64
+	fc.bytes += e.bytes
 
 	// Per-key FIFO: drop the key's oldest entry once it holds its bound of
 	// distinct payloads.
@@ -209,7 +226,7 @@ func (fc *frameCache) remove(e *frameCacheEntry) {
 	}
 
 	fc.entries--
-	fc.bytes -= int64(len(e.frame.Data())) + 64
+	fc.bytes -= e.bytes
 }
 
 type Hub struct {
@@ -646,6 +663,7 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 	go func() {
 		ticker := time.NewTicker(h.heartbeat)
 		defer ticker.Stop()
+		var responseVersion uint64
 		for {
 			select {
 			case <-ctx.Done():
@@ -657,15 +675,19 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 				// cache). At 1000 clients an un-gated tick is ~330 SQLite
 				// queries per second re-verifying sessions that cannot have
 				// changed; a session insert/delete or a user ban/deactivation
-				// bumps a generation, so the skip is exact under the
-				// documented single-process write model. The ping itself is
-				// still sent every tick.
-				if sv, uv := h.db.SessionVersion(), h.db.UserVersion(); sv != c.sessVer || uv != c.userVer {
+				// bumps a generation. ResponseVersion additionally observes
+				// foreign commits; observation failures force reauthorization.
+				// The ping itself is still sent every tick.
+				rv, versionErr := h.db.ResponseVersion(ctx)
+				if sv, uv := h.db.SessionVersion(), h.db.UserVersion(); versionErr != nil || rv != responseVersion || sv != c.sessVer || uv != c.userVer {
 					if _, err := h.db.SessionUser(ctx, c.token); err != nil {
 						c.stop()
 						return
 					}
 					c.sessVer, c.userVer = sv, uv
+					if versionErr == nil {
+						responseVersion = rv
+					}
 				}
 				data, _ := json.Marshal(map[string]any{"type": "ping", "message": time.Now().Unix()})
 				frame := websocket.NewPreparedMessage(websocket.MessageText, data)
@@ -700,6 +722,10 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 		}
 		switch command.Command {
 		case "subscribe":
+			if user, err := h.db.SessionUser(ctx, c.token); err != nil || user.ID != c.user.ID {
+				c.send(map[string]string{"type": "reject_subscription", "identifier": command.Identifier})
+				continue
+			}
 			sub, valid := h.subscription(ctx, c, command.Identifier)
 			h.mu.Lock()
 			_, exists := c.subscriptions[command.Identifier]
@@ -707,7 +733,7 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 			h.mu.Unlock()
 			if valid && available {
 				if !exists && sub.Channel == "PresenceChannel" {
-					if h.db.Presence(ctx, c.user.ID, sub.Room, "present") != nil {
+					if h.db.SessionPresence(ctx, c.token, c.user.ID, sub.Room, "present") != nil {
 						valid = false
 					} else {
 						sub.Present = true
@@ -748,7 +774,8 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 			if json.Unmarshal([]byte(command.Data), &payload) != nil {
 				continue
 			}
-			if _, err := h.db.SessionUser(ctx, c.token); err != nil {
+			user, err := h.db.SessionUser(ctx, c.token)
+			if err != nil || user.ID != c.user.ID {
 				return
 			}
 			if sub.Room != 0 {
@@ -759,7 +786,7 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 			switch sub.Channel {
 			case "TypingNotificationsChannel":
 				if payload.Action == "start" || payload.Action == "stop" {
-					h.PublishStream(ctx, sub.Stream, map[string]any{"action": payload.Action, "user": map[string]any{"id": c.user.ID, "name": c.user.Name}})
+					h.PublishStream(ctx, sub.Stream, map[string]any{"action": payload.Action, "user": map[string]any{"id": user.ID, "name": user.Name}})
 				}
 			case "PresenceChannel":
 				action := payload.Action
@@ -772,7 +799,7 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 				if action == "absent" && !sub.Present {
 					continue
 				}
-				if h.db.Presence(ctx, c.user.ID, sub.Room, action) == nil {
+				if h.db.SessionPresence(ctx, c.token, c.user.ID, sub.Room, action) == nil {
 					sub.Present = action != "absent"
 					h.mu.Lock()
 					c.subscriptions[command.Identifier] = sub
@@ -899,10 +926,12 @@ func (c *authzCache) storeLocked(key authzKey, userID, sess, member, userVersion
 	}
 	if len(c.ring)-c.head >= authzCacheMax {
 		old := c.ring[c.head]
+		c.ring[c.head] = authzKey{}
 		c.head++
 		delete(c.m, old)
 		if c.head >= authzCompactHead && c.head*2 >= len(c.ring) {
 			copy(c.ring, c.ring[c.head:])
+			clear(c.ring[len(c.ring)-c.head:])
 			c.ring = c.ring[:len(c.ring)-c.head]
 			c.head = 0
 		}

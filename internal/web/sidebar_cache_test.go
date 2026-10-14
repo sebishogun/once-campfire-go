@@ -237,7 +237,7 @@ func TestSidebarHitServesWithBrokenSidebarTables(t *testing.T) {
 	}
 	entry.key = appendSidebarPageKey(nil, gate.version, generation, authed, false)
 	app.sidebarPages.put(entry)
-	app.sidebarGates.Store(user.ID, servedGate{version: gate.version, generation: generation, frameKey: gate.frameKey})
+	app.sidebarGates.Store(user.ID%4096, servedGate{user: user.ID, version: gate.version, generation: generation, frameKey: gate.frameKey})
 	status, hit := getSidebar(t, server, cookie)
 	if status != 200 {
 		t.Fatalf("sidebar hit with sidebar tables dropped: %d (a miss would need reads)", status)
