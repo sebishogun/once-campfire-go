@@ -31,10 +31,9 @@ func oldUnreadFanout(hub *Hub, ctx context.Context, room int64) {
 	}
 }
 
-// BenchmarkUnreadBumpFanout compares the Lever-5 bump (one snapshot of the
-// active unread subscriptions, one bulk authorization, one shared frame) with
-// the shape it replaced, over a room with 100 members and 1 or 100 of them
-// subscribed. Run with:
+// BenchmarkUnreadBumpFanout compares the Lever-5 bump (a room-member read, one
+// bulk authorization, one shared frame) with the shape it replaced, over a room
+// with 100 members and 1 or 100 of them subscribed. Run with:
 //
 //	taskset -c 16-31 nice -n 19 env GOMAXPROCS=4 go test -run '^$' -bench BenchmarkUnreadBumpFanout -benchmem -count=5 ./internal/cable/
 func BenchmarkUnreadBumpFanout(b *testing.B) {
@@ -62,7 +61,7 @@ func BenchmarkUnreadBumpFanout(b *testing.B) {
 			}
 			// Warm the frame and authorization paths so the measurement is
 			// steady state.
-			hub.PublishUnreadBump(ctx, roomID)
+			hub.PublishUnreadBump(roomID, unreadBudget)
 			oldUnreadFanout(hub, ctx, roomID)
 			drain()
 			b.Run("bump", func(b *testing.B) {
@@ -70,7 +69,7 @@ func BenchmarkUnreadBumpFanout(b *testing.B) {
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					drain()
-					hub.PublishUnreadBump(ctx, roomID)
+					hub.PublishUnreadBump(roomID, unreadBudget)
 				}
 			})
 			b.Run("member-fanout", func(b *testing.B) {
@@ -81,6 +80,44 @@ func BenchmarkUnreadBumpFanout(b *testing.B) {
 					oldUnreadFanout(hub, ctx, roomID)
 				}
 			})
+		})
+	}
+}
+
+// BenchmarkUnreadBumpUnrelatedSubscribers pins the candidate strategy's
+// scaling: a fixed two-member target room, one subscribed member, and 0/100/
+// 10,000 unread subscribers whose users are members of no room the post
+// touches. The bump's cost must be flat in that last number — an unrelated
+// subscriber contributes no token, no row and no lock-held work — while the
+// pre-Lever-5 shape would have published once per unrelated subscriber too.
+// Run with the same pinned-CPU command as BenchmarkUnreadBumpFanout.
+func BenchmarkUnreadBumpUnrelatedSubscribers(b *testing.B) {
+	for _, straysN := range []int{0, 100, 10000} {
+		b.Run("strays="+strconv.Itoa(straysN), func(b *testing.B) {
+			hub, db, owner, _, _ := hubFixture(b)
+			ctx := context.Background()
+			member, err := db.CreateUser(ctx, "Member", "member@test", "digest", "", 0, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			pair, err := db.CreateRoom(ctx, owner.ID, "Rooms::Closed", "Pair", []int64{owner.ID, member.ID})
+			if err != nil {
+				b.Fatal(err)
+			}
+			strays := make([]*client, 0, straysN)
+			for i := 0; i < straysN; i++ {
+				strays = append(strays, strayUnreadSubscriber(hub, 1_000_000+int64(i), func() {}))
+			}
+			memberC, _ := unreadSubscriber(b, hub, db, member)
+			hub.PublishUnreadBump(pair.ID, unreadBudget)
+			memberC.q.clear()
+			_ = strays // never recipients: only the member's queue can fill
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				memberC.q.clear()
+				hub.PublishUnreadBump(pair.ID, unreadBudget)
+			}
 		})
 	}
 }

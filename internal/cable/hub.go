@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -232,18 +233,19 @@ type Hub struct {
 	// literally the subscribe-time mirror of publish()'s old match.
 	roomStreams  map[int64]map[*client][]string
 	namedStreams map[string]map[*client][]string
-	// unread is the ACTIVE unread-subscription index (Lever 5): the clients
-	// holding an UnreadRoomsChannel subscription — the `user_<id>_unreads`
-	// stream, derived at subscribe time from the client's own user — with the
-	// subscription identifiers that match it. PublishUnreadBump targets this
-	// set directly, so the unread bump costs one bulk authorization and one
-	// frame per distinct identifier instead of a room-member read, a stream
-	// name and a publish per member; with no entry here the bump is a locked
-	// length check and returns. Maintained under mu exactly like the two maps
-	// above.
-	unread map[*client][]string
-	cache  *frameCache
-	authz  *authzCache
+	// unreadByUser is the ACTIVE unread-subscription index (Lever 5): for each
+	// user with a live client, the clients holding an UnreadRoomsChannel
+	// subscription — the `user_<id>_unreads` stream, derived at subscribe time
+	// from the client's own user — with the subscription identifiers that match
+	// it. PublishUnreadBump intersects it with the room's members, so the
+	// candidate set is the room's own subscribers and never the server's: a
+	// post to a two-person room does no work for an unrelated subscriber
+	// anywhere else, and a post with no unread subscriber on the server at all
+	// returns on a locked length check. Maintained under mu exactly like the
+	// two maps above.
+	unreadByUser map[int64]map[*client][]string
+	cache        *frameCache
+	authz        *authzCache
 }
 type client struct {
 	user          database.User
@@ -347,7 +349,12 @@ func (h *Hub) indexAddLocked(c *client, identifier string, sub subscription) {
 		m[c] = append(m[c], identifier)
 	}
 	if sub.Channel == "UnreadRoomsChannel" {
-		h.unread[c] = append(h.unread[c], identifier)
+		m := h.unreadByUser[c.user.ID]
+		if m == nil {
+			m = make(map[*client][]string)
+			h.unreadByUser[c.user.ID] = m
+		}
+		m[c] = append(m[c], identifier)
 	}
 }
 
@@ -377,10 +384,15 @@ func (h *Hub) indexRemoveLocked(c *client, identifier string, sub subscription) 
 		}
 	}
 	if sub.Channel == "UnreadRoomsChannel" {
-		if ids := removeIdentifier(h.unread[c], identifier); len(ids) == 0 {
-			delete(h.unread, c)
-		} else {
-			h.unread[c] = ids
+		if m := h.unreadByUser[c.user.ID]; m != nil {
+			if ids := removeIdentifier(m[c], identifier); len(ids) == 0 {
+				delete(m, c)
+				if len(m) == 0 {
+					delete(h.unreadByUser, c.user.ID)
+				}
+			} else {
+				m[c] = ids
+			}
 		}
 	}
 }
@@ -410,7 +422,7 @@ type subscription struct {
 }
 
 func New(db *database.DB, secrets *rails.Secrets) *Hub {
-	return &Hub{db: db, secrets: secrets, fast: fastFromEnv(), heartbeat: 3 * time.Second, clients: map[*client]struct{}{}, roomStreams: map[int64]map[*client][]string{}, namedStreams: map[string]map[*client][]string{}, unread: map[*client][]string{}, cache: newFrameCache(), authz: newAuthzCache()}
+	return &Hub{db: db, secrets: secrets, fast: fastFromEnv(), heartbeat: 3 * time.Second, clients: map[*client]struct{}{}, roomStreams: map[int64]map[*client][]string{}, namedStreams: map[string]map[*client][]string{}, unreadByUser: map[int64]map[*client][]string{}, cache: newFrameCache(), authz: newAuthzCache()}
 }
 func (c *client) send(value any) bool {
 	data, err := json.Marshal(value)
@@ -1133,36 +1145,53 @@ func (h *Hub) fanout(recipients []recipient, message any, wrap []byte) []byte {
 // still compares the exact payload bytes, so the two never alias).
 func roomScope(room int64) string { return "room:" + strconv.FormatInt(room, 10) }
 
-// PublishUnreadBump notifies the room's members that a message bumped their
+// PublishUnreadBump notifies the members of room that a message bumped their
 // unread count — the reference's unread broadcast, which the posting request
-// runs after the message commits. It targets the hub's ACTIVE unread
-// subscriptions instead of the room's membership: with no client holding an
-// UnreadRoomsChannel subscription the call is a locked length check that
-// reads no database row, builds no payload map and formats no stream name per
-// member; with subscribers it resolves them in ONE bulk authorization query
-// and shares ONE frame per distinct subscription identifier (the payload —
-// the room id — is identical for every recipient).
+// runs after the message commits. It is bounded by budget, applied only once
+// the publication starts its own work: an idle bump opens no timer and
+// allocates nothing, and a slow earlier stage cannot leave it with a spent
+// budget (the budget is measured from here, never inherited).
 //
-// Authorization is rechecked on every call, uncached: the query returns the
-// live session's user and whether that user is a member of room, so a
-// revoked, deleted or banned session is dropped from this publication and a
-// subscriber that is not a member of room is skipped (never disconnected).
-// An absent token is a revoked session, and its client is stopped exactly as
-// the generic publish path stops an unauthorized recipient. A query error
-// delivers nothing and stops nobody: a transient read failure must not
-// disconnect live clients.
+// Candidate selection is room-relevant. The room's members (one read, the same
+// read the per-member fan-out always did) are intersected with the hub's
+// ACTIVE unread subscriptions, so a small room pays for its own members and
+// never for every unread subscriber on the server: an unrelated subscriber
+// costs no token, no row and no lock-held work. A large room pays the member
+// read it always paid, then ONE bulk authorization and one shared frame
+// instead of a publish, an authorization pass and a frame per member.
 //
-// Concurrency: the RLock that snapshots the index is the publication's
+// The recipients are resolved in one uncached authorization query over the
+// deduplicated session tokens and rechecked on every call. A token with no
+// live authorized session is a revoked, deleted or banned client, whose client
+// is stopped exactly as the generic publish path stops an unauthorized
+// recipient. The query is deliberately session-only (room 0): membership is
+// the candidate set, so a member removed from the room between the read and
+// the query is skipped rather than disconnected, and a failed read delivers
+// nothing and stops nobody.
+//
+// Concurrency: the RLock that snapshots the recipients is the publication's
 // concurrency point. indexAddLocked (a subscribe) needs the write lock, so a
-// subscription registered before the snapshot is in it and receives the
-// frame, and one registered after it is not — the same linearization publish
-// gives every other stream. No subscriber that was already registered when
-// the post's notification began can miss the frame, so the zero-subscriber
-// return cannot race a concurrent subscribe into a dropped frame.
-func (h *Hub) PublishUnreadBump(ctx context.Context, room int64) error {
+// subscription registered before the snapshot is in it and receives the frame,
+// and one registered after it is not — the same linearization publish gives
+// every other stream. The earlier unlocked length check can only skip when no
+// client on the server holds an unread subscription, so no already-registered
+// subscriber can be part of it: the shortcut cannot drop a frame either.
+func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
+	// The shortcut: no unread subscriber anywhere means no member read, no
+	// payload map, no stream name and no timer.
 	h.mu.RLock()
-	if len(h.unread) == 0 {
-		h.mu.RUnlock()
+	idle := len(h.unreadByUser) == 0
+	h.mu.RUnlock()
+	if idle {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	members, err := h.db.RoomMemberIDs(ctx, room)
+	if err != nil {
+		return err
+	}
+	if len(members) == 0 {
 		return nil
 	}
 	scratch := publishScratchPool.Get().(*publishScratch)
@@ -1173,34 +1202,46 @@ func (h *Hub) PublishUnreadBump(ctx context.Context, room int64) error {
 		scratch.wrap, scratch.recips, scratch.tokens = wrap, recipients, tokens
 		publishScratchPool.Put(scratch)
 	}()
-	scope := roomScope(room)
-	for c, identifiers := range h.unread {
-		for _, identifier := range identifiers {
-			recipients = append(recipients, recipient{client: c, identifier: identifier, room: room, scope: scope})
+	h.mu.RLock()
+	scope := ""
+	for _, member := range members {
+		m := h.unreadByUser[member]
+		if len(m) == 0 {
+			continue
+		}
+		if scope == "" {
+			scope = roomScope(room)
+		}
+		for c, identifiers := range m {
+			// One token per client: a client's identifiers share its session.
 			tokens = append(tokens, c.token)
+			for _, identifier := range identifiers {
+				recipients = append(recipients, recipient{client: c, identifier: identifier, room: room, scope: scope})
+			}
 		}
 	}
 	h.mu.RUnlock()
 	if len(recipients) == 0 {
 		return nil
 	}
-	access, err := h.db.RoomSessionMembers(ctx, tokens, room)
+	// One token per distinct session, however many tabs or identifiers a
+	// client holds: sorting in place keeps this allocation-free.
+	slices.Sort(tokens)
+	tokens = slices.Compact(tokens)
+	allowed, err := h.db.AuthorizedSessions(ctx, tokens, 0)
 	if err != nil {
 		return err
 	}
-	// Compact in place: keep only live members, stop revoked sessions.
+	// Compact in place: keep only live sessions, stop the rest.
 	kept := recipients[:0]
 	for i := range recipients {
 		r := &recipients[i]
-		a, live := access[r.client.token]
+		user, live := allowed[r.client.token]
 		if !live {
 			r.client.stop()
 			continue
 		}
-		if !a.Member {
-			continue
-		}
-		r.user = a.UserID
+		r.user = user
 		kept = append(kept, *r)
 	}
 	if len(kept) == 0 {

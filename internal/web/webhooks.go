@@ -19,9 +19,13 @@ import (
 // enqueueWebhooks queues webhook deliveries to mentioned bots (or every
 // user, for direct rooms). mentioned carries the mentioned user ids the
 // create path already derived from the body's single parse (ENGINE-45b);
-// nil means "derive here". ctx bounds the candidate lookup; the caller owns
-// that budget.
-func (s *Server) enqueueWebhooks(ctx context.Context, message database.Message, room database.Room, mentioned []int64) {
+// nil means "derive here".
+//
+// The candidate lookup opens its own budget (deliveryTimeout) only after the
+// cheap empty-mention check below, so an idle call costs no timer and a slow
+// earlier stage (the room broadcast) cannot leave it with a spent deadline
+// (Lever 5).
+func (s *Server) enqueueWebhooks(message database.Message, room database.Room, mentioned []int64) {
 	// A non-direct room with an empty mention list has no candidate bot. The
 	// create path derived that list from the same body parse and hands it in,
 	// so an empty non-nil list is already the answer: no body re-parse, no
@@ -29,6 +33,8 @@ func (s *Server) enqueueWebhooks(ctx context.Context, message database.Message, 
 	if room.Type != "Rooms::Direct" && mentioned != nil && len(mentioned) == 0 {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), deliveryTimeout)
+	defer cancel()
 	var candidates []database.User
 	var err error
 	if room.Type == "Rooms::Direct" {
@@ -153,12 +159,7 @@ func (s *Server) deliverWebhook(ctx context.Context, botID, messageID int64) err
 	if err != nil {
 		return err
 	}
-	// The bot's reply bumps the room's unread streams like any other message.
-	// The job context is the runner's root context, which carries no deadline,
-	// so give the bump its own (the bound the inline path always had).
-	notifyCtx, cancelNotify := context.WithTimeout(ctx, pushRequestTimeout)
-	s.messageCreated(notifyCtx, created, room, nil)
-	cancelNotify()
+	s.messageCreated(created, room, nil)
 	views, err := s.messageViews(ctx, []database.Message{created})
 	if err != nil {
 		return err

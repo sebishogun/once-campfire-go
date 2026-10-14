@@ -2,7 +2,6 @@ package web
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,11 +176,8 @@ func (s *Server) botRequest(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		s.publish(room.ID, stream("append", room.DOM("messages"), markup))
-		// One budget for the post-commit notification step (Lever 5).
-		deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), deliveryTimeout)
-		s.messageCreated(deliveryCtx, message, room, nil)
-		s.enqueueWebhooks(deliveryCtx, message, room, nil)
-		cancelDelivery()
+		s.messageCreated(message, room, nil)
+		s.enqueueWebhooks(message, room, nil)
 		w.Header().Set("Location", fmt.Sprintf("%s/messages/%d", s.origin(r), message.ID))
 		w.WriteHeader(201)
 	case "PATCH", "PUT":
