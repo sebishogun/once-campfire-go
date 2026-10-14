@@ -854,3 +854,21 @@ The train `34782d0` = engine-v2 (DHH review fixes) + opt-loop + opt-cache +
 opt-front + opt-replay (with the keep-alive fix) + opt-cgo + opt-p2-cgo +
 opt-p1-write + opt-p3-checkpoint + opt-p4-notify + opt-runtime; full gate
 green (race suite, browser, 178/178 screen pixels+a11y, interop).
+
+## Native C vs Go (2026-10-14, tmpfs, same pinning)
+
+Native driver (no containers), CPUs 8-11 vs 12-15, conc 16, 8 s samples,
+3 alternating rounds, both databases on tmpfs, contract-validated, zero
+errors:
+
+| Route | C | Go train | Go/C |
+|---|---:|---:|---:|
+| room_show | 156,170 | 146,722 | 0.94× |
+| messages_page | 161,041 | 188,938 | 1.17× |
+| sidebar | 172,087 | 165,135 | 0.96× |
+| search | 171,762 | 198,252 | 1.15× |
+| post_message | 7,449 | 17,994 | 2.42× |
+
+Go is ahead of C on messages, search and post; C keeps a small lead on room
+and sidebar at native tmpfs conditions. Raw:
+`/tmp/opencode/native-bench-20261014-210031/summary.json`.

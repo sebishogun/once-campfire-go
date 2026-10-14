@@ -553,16 +553,19 @@ MIT; see [MIT-LICENSE](MIT-LICENSE). Third-party notices for copied/adapted algo
 [licenses](licenses/) and [internal/html/LICENSE](internal/html/LICENSE); module dependencies retain
 their own licenses.
 
-Shared verification harness (`basecamp/once-campfire-verification`,
-route-contract-v1, revision 7b2dbc7, same machine, c=16, 3 rounds) measured the
-merged engine (`engine-v2` tree) at 77,913 room page, 91,533 messages, 113,169
-search, 24,430 sidebar and 7,628 post message per second. Against the published
-table's shared-harness numbers that is 2.20× Rust on the room page, 2.25×
-messages, 3.29× search; sidebar (0.71×) and post message (0.85×) remain behind
-Rust under this referee and are the current targets.
+Shared verification harness (`basecamp/once-campfire-verification`, revision
+`ec02deb`, same machine, tmpfs runtime, c=16, 3 rounds, zero errors) against
+the latest published Rust revision `f9dca47`:
 
-With the sidebar whole-page precompressed cache and the reference-shaped push
-delivery (plans/validation.md), the same referee measured sidebar at 134,692
-and post message at 8,239: 3.91× Rust on the sidebar; post is 0.92× Rust with
-the residual being the harness host's btrfs writeback ceiling shared by every
-implementation (C 7,460 – upstream Go 9,073).
+| Route | Rust `f9dca47` | This branch | vs Rust |
+|---|---:|---:|---:|
+| Room page | 109,586 | 149,403 | 1.36× |
+| Messages page | 106,497 | 192,759 | 1.81× |
+| Sidebar | 124,369 | 166,116 | 1.34× |
+| Search | 125,870 | 197,400 | 1.57× |
+| Post message | 8,235 | 15,817 | 1.92× |
+
+Every route is ahead of Rust (1.34×-1.92×); the local Rust image reproduces
+the published Rust figures within ~2-4%. Against the C port at native tmpfs
+conditions this branch leads on messages (1.17×), search (1.15×) and post
+(2.42×), with room and sidebar near parity (0.94×/0.96×).
