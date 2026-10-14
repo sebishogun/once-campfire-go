@@ -253,8 +253,26 @@ func (d *DB) SetInvolvement(ctx context.Context, user, room int64, value string)
 	return nil
 }
 func (d *DB) Presence(ctx context.Context, user, room int64, action string) error {
+	return d.presence(ctx, user, room, action, "")
+}
+
+// SessionPresence checks revocation in the same write transaction as presence.
+func (d *DB) SessionPresence(ctx context.Context, token string, user, room int64, action string) error {
+	if token == "" {
+		return ErrForbidden
+	}
+	return d.presence(ctx, user, room, action, token)
+}
+
+func (d *DB) presence(ctx context.Context, user, room int64, action, token string) error {
 	clearUnread := action == "present"
 	err := d.Transaction(ctx, func(tx *sql.Tx) error {
+		if token != "" {
+			var id int64
+			if err := tx.QueryRowContext(ctx, "SELECT u.id FROM users u JOIN sessions s ON s.user_id=u.id WHERE s.token=? AND u.id=? AND u.status=0", token, user).Scan(&id); err != nil {
+				return err
+			}
+		}
 		now := d.Now()
 		stamp, cutoff := Stamp(now), Stamp(now.Add(-60*time.Second))
 		var query string

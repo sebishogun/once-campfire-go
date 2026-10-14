@@ -192,6 +192,8 @@ func TestCreateMessageStatementCount(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	form := url.Values{"message[body]": {"hello lane"}, "message[client_message_id]": {"count-1"}}.Encode()
+	// Count the posting request, not the independently scheduled outbox scan.
+	app.Jobs.Close(time.Second)
 	reset()
 	response, data := parityPost(t, server, form, cookie)
 	// The createMessage response for a browser-style Accept (", */*" tails)
@@ -274,6 +276,7 @@ func TestCreateMessageFastWriteStatementCount(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	form := url.Values{"message[body]": {"hello lane"}, "message[client_message_id]": {"fast-count-1"}}.Encode()
+	app.Jobs.Close(time.Second)
 	reset()
 	response, data := parityPost(t, server, form, cookie)
 	if response.StatusCode != 406 {

@@ -149,14 +149,10 @@ quarter of the budget is not cached).
 `CAMPFIRE_WRITE_QUEUE` (default `on`; also accepts `true`/`1` and `off`/`false`/`0`, warning on
 anything else) routes message creation through a single writer goroutine that commits everything
 queued at a drain in one `BEGIN IMMEDIATE` transaction (group commit), each job in its own savepoint
-so a failing job rolls back exactly its own statements while the batch commits. The writer then runs
-a second phase of its own: the unread bump for the batch, in bounded
-transactions (at most 256 jobs each, each job in its own savepoint when the transaction holds more
-than one), so a batch of B messages costs one primary commit plus the second phase's commits — two
-when the batch fits one after transaction — instead of one after transaction per request. Each
-request learns its message only after both phases — the response is never sent ahead of persistence
-— and an after-phase failure is reported to the caller that owns the failed job while the message
-row stays, the way the Rust port's `after_commit` hooks shape the same Rails callbacks. The writer
+so a failing job rolls back exactly its own statements while the batch commits. Message, body,
+attachments, FTS and unread state commit together on every lane. The port-owned
+`campfire_push_outbox` table and insert trigger record push intent in that same transaction.
+This deliberately strengthens the reference's asynchronous callback boundary. The writer
 connection disables SQLite's
 auto-checkpoint (`PRAGMA wal_autocheckpoint=0`) and a separate connection runs
 `PRAGMA wal_checkpoint(PASSIVE)` every `CAMPFIRE_CHECKPOINT_MS` milliseconds (default 1000).
@@ -164,18 +160,27 @@ Scheduled checkpoint fsyncs run off the writer; threshold PASSIVE/RESTART runs b
 the next batch is accepted and can delay queued writers. Durability does not move: the
 database stays WAL mode with `synchronous=NORMAL` and the default `journal_size_limit` (unset,
 -1), commits are never fsynced, and what committed since the last checkpoint can be lost to a power
-failure (never to a process crash); every checkpoint syncs the WAL, as the auto-checkpoint did. Two
-deliberate windows follow from the after-commit shape: a crash (or a failed statement) between the
-shared commit and the unread statements can leave unread counters behind, and a
-request that disconnects after its job started still persists (the job's context is only checked
-before execution). Setting `off` restores the per-request transaction path with the message, index
-and unread bump in one rollback-atomic transaction and the writer's auto-checkpoint, byte-for-byte
-the pre-lane behaviour; the checksum of the response bytes is covered by the write-lane parity
-tests. The sidebar and search-cache version counters move after the write's commits on both paths
-(group commit plus its after phase, and per-request), so the write lane never serves a version-keyed
+failure (never to a process crash); every checkpoint syncs the WAL, as the auto-checkpoint did.
+Setting `off` restores per-request transactions and the writer's auto-checkpoint. The response
+checksum is covered by write-lane parity tests. Sidebar and search-cache version counters move
+after commit on both paths, so the write lane never serves a version-keyed
 cache that hides a committed message or its index row.
-The search-index row commits atomically with the message and body on every lane. An edit or
-deletion between the primary commit and unread work cannot replay the original body into FTS.
+Push workers discover outstanding intent at startup and every second; queue saturation loses only
+a wake. Failed deliveries retain intent with a 30-second retry delay. Successful delivery is
+acknowledged by deleting the record. Delivery is **at-least-once**, not exactly-once: a crash after
+remote acceptance but before acknowledgement can duplicate a notification, including recipients
+already served before another recipient failed. Replay uses current message content, membership
+and subscriptions; deleting a message cascades its pending intent. Disabled VAPID intentionally
+discards pending intent. Websocket publication is best effort and is not replayed. Subprocess
+crash tests cover primary-commit and pre-notification boundaries; simulated push-service and DNS
+failures, startup replay and queue saturation are covered locally, not against a live push provider.
+
+Cable subscriptions reauthorize sessions before side effects, and presence checks the token and
+active user in the write transaction. Heartbeats observe foreign database commits. Frame-cache
+admission now resolves compression and charges both backing capacities, keys and bookkeeping;
+this eagerly compresses cache misses even without compressed recipients. Sidebar gates are
+direct-mapped into 4096 slots (collisions cause misses), with fixed-size digest keys. No throughput
+or allocation benchmark was run for this durability/memory fix set.
 Deterministic independent-connection revocation tests cover search and sidebar requests paused
 after generation capture, with whole-response caching enabled and disabled. These are local
 correctness checks; no throughput measurements were run for the data-plane fixes.
@@ -233,7 +238,7 @@ serialized fastdb connection (`internal/fastdb/write` over `internal/fastdb/csql
 in one statement), message insert, room touch, rich-text body, attachment, and search-index insert
 in the primary transaction; only the unread bump remains in the second phase — bound positionally (int64/text/null), prepared once
 and reused across jobs, with the same `BEGIN IMMEDIATE`, savepoint-per-job, single-commit-per-batch
-and writer-owned bounded-after-phase shapes the `database/sql` lane has. The pragma set is identical
+and atomic group-commit shapes the `database/sql` lane has. The pragma set is identical
 (`busy_timeout=5000`, `foreign_keys=on`, WAL, `synchronous=NORMAL`, `cache_size=2000`,
 `wal_autocheckpoint=0` with the off-writer PASSIVE checkpointer unchanged), and the error
 mapping matches (`errors.Is` against the same sentinels: `sql.ErrNoRows`, the csqlite

@@ -56,6 +56,7 @@ func sidebarFragmentKey(userID int64, version uint64) string {
 // version it was served for and the content key the frame fragment is stored
 // under.
 type servedGate struct {
+	user       int64
 	version    uint64
 	generation uint64
 	frameKey   string
@@ -63,11 +64,12 @@ type servedGate struct {
 
 // sidebarGate loads the user's served gate.
 func (s *Server) sidebarGate(user int64) (servedGate, bool) {
-	value, ok := s.sidebarGates.Load(user)
+	value, ok := s.sidebarGates.Load(user % 4096)
 	if !ok {
 		return servedGate{}, false
 	}
-	return value.(servedGate), true
+	gate := value.(servedGate)
+	return gate, gate.user == user
 }
 
 // sidebarHTML renders the sidebar frame and caches it under its content key;
@@ -97,7 +99,8 @@ func (s *Server) recordSidebarGate(p page, frameKey string) {
 	if p.gateVersion == 0 || p.gateGeneration == 0 {
 		return
 	}
-	s.sidebarGates.Store(p.User.ID, servedGate{version: p.gateVersion, generation: p.gateGeneration, frameKey: frameKey})
+	// Direct-mapped slots bound historical users; collisions only cause misses.
+	s.sidebarGates.Store(p.User.ID%4096, servedGate{user: p.User.ID, version: p.gateVersion, generation: p.gateGeneration, frameKey: frameKey})
 }
 
 // sidebarCacheKey keys every value the sidebar frame reads. Authorization

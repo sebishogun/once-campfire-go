@@ -490,14 +490,9 @@ func TestHeartbeatGateKeepsDisconnectSemantics(t *testing.T) {
 	}
 }
 
-// TestHeartbeatGateSkipsUnchangedSessions is the counterpart of the gate:
-// with the generation gate, out-of-band sessions-table writes (direct SQL
-// that does not bump the generation) are invisible to the heartbeat, the
-// documented single-process limit shared with the ENGINE-40b authorization
-// cache. The un-gated pre-ENGINE-54 check would have caught it; this test
-// pins the documented contract so the gate cannot silently regress into a
-// full re-check (or lose the gate's DB-query elimination).
-func TestHeartbeatGateSkipsUnchangedSessions(t *testing.T) {
+// Out-of-band commits invalidate the heartbeat's observed database generation
+// even when they do not move the application's session counter.
+func TestHeartbeatGateDetectsOutOfBandRevocation(t *testing.T) {
 	hub, db, user, roomID, secrets := hubFixture(t)
 	hub.heartbeat = 30 * time.Millisecond
 
@@ -528,8 +523,7 @@ func TestHeartbeatGateSkipsUnchangedSessions(t *testing.T) {
 		}
 	}
 
-	// Delete the row out of band (no generation bump): the gated heartbeat
-	// does not see it, and the connection must survive several ticks.
+	// Delete the row without bumping the local session counter.
 	if _, err := db.Write.ExecContext(ctx, "DELETE FROM sessions WHERE token=?", token); err != nil {
 		t.Fatal(err)
 	}
@@ -537,9 +531,10 @@ func TestHeartbeatGateSkipsUnchangedSessions(t *testing.T) {
 	for time.Now().Before(alive) {
 		_, _, err := conn.Read(ctx)
 		if err != nil {
-			t.Fatalf("out-of-band session delete disconnected the client: %v", err)
+			return
 		}
 	}
+	t.Fatal("out-of-band session revocation survived heartbeat")
 }
 
 // TestSlowClientBatchKeepsQueueBound verifies the 256-frame slow-client

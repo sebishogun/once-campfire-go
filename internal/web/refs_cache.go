@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/basecamp/once-campfire-go/internal/database"
 )
@@ -30,7 +31,7 @@ import (
 // using recorded piece digests where available, including related-user bytes.
 
 // messageRefsDefaultMB is the byte budget when CAMPFIRE_MESSAGE_REFS_CACHE_MB
-// is unset. References are small (40 refs ≈ 2.3 KB charged), so the default is
+// is unset. A 40-row window is approximately 5 KB charged on amd64; the default is
 // generous per room; the entry cap is the other bound.
 const messageRefsDefaultMB = 8
 
@@ -111,7 +112,7 @@ func (c *messageRefsCache) store(key messageRefsKey, refs []database.Message, va
 	if c == nil {
 		return
 	}
-	size := 240 + 40*len(refs) + len(validator.etag)
+	size := 240 + int(unsafe.Sizeof(database.Message{}))*len(refs) + len(validator.etag)
 	if size > c.limit/4 {
 		return
 	}

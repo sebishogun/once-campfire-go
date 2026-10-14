@@ -420,7 +420,9 @@ func (t *WriteTx) Commit() error {
 	err := t.c.execLocked("COMMIT")
 	if err != nil {
 		t.done = true
-		t.c.execLocked("ROLLBACK")
+		if rollbackErr := t.c.execLocked("ROLLBACK"); rollbackErr != nil {
+			err = errors.Join(err, rollbackErr, t.c.closeLocked())
+		}
 		t.c.mu.Unlock()
 		return err
 	}
@@ -438,6 +440,9 @@ func (t *WriteTx) Rollback() error {
 	}
 	t.done = true
 	err := t.c.execLocked("ROLLBACK")
+	if err != nil {
+		err = errors.Join(err, t.c.closeLocked())
+	}
 	t.c.mu.Unlock()
 	return err
 }
