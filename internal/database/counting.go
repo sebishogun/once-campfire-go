@@ -84,10 +84,11 @@ func (c *countedConn) QueryContext(ctx context.Context, query string, args []dri
 // fallback paths convert to positional values for the driver's Exec/Query.
 type countedStmt struct {
 	driver.Stmt
+	query string
 }
 
 func (s *countedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	countedStatements.n.Add(1)
+	countedStatements.record(s.query)
 	if ex, ok := s.Stmt.(driver.StmtExecContext); ok {
 		return ex.ExecContext(ctx, args)
 	}
@@ -99,7 +100,7 @@ func (s *countedStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 }
 
 func (s *countedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	countedStatements.n.Add(1)
+	countedStatements.record(s.query)
 	if q, ok := s.Stmt.(driver.StmtQueryContext); ok {
 		return q.QueryContext(ctx, args)
 	}
@@ -115,7 +116,7 @@ func (c *countedConn) PrepareContext(ctx context.Context, query string) (driver.
 	if err != nil {
 		return nil, err
 	}
-	return &countedStmt{Stmt: stmt}, nil
+	return &countedStmt{Stmt: stmt, query: query}, nil
 }
 
 func init() {
