@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -331,6 +332,59 @@ func TestWALRestartDefersToCheckpointerGate(t *testing.T) {
 		if d.writer.restarts.Load() == 0 {
 			t.Fatalf("no completed restart after the gate released (attempts=%d incomplete=%d)",
 				d.writer.restartAttempts.Load(), d.writer.restartIncomplete.Load())
+		}
+	})
+}
+
+// TestWALThresholdRecoversAfterLargeBodies pins the threshold's overshoot
+// shape: a single large message writes many WAL frames in one transaction, so
+// the check that runs after that drain can see the WAL past the threshold.
+// There is no backpressure — the write is never refused or delayed to stay
+// under the threshold — and the restart on the next drain brings the WAL back,
+// so the overshoot is transient rather than cumulative.
+func TestWALThresholdRecoversAfterLargeBodies(t *testing.T) {
+	runBothLanes(t, func(t *testing.T) {
+		t.Setenv("CAMPFIRE_CHECKPOINT_PAGES", "200")
+		t.Setenv("CAMPFIRE_CHECKPOINT_MS", "3600000")
+		path := filepath.Join(t.TempDir(), "large.sqlite3")
+		d, user, room := seedPoster(t, path, 4)
+		defer d.Close()
+		ctx := context.Background()
+		limit := d.writer.limit
+		if limit <= 0 {
+			t.Fatalf("threshold = %d, want the default on", limit)
+		}
+		// Each body is large enough that one post's transaction writes more
+		// frames than the threshold allows.
+		body := "<p>" + strings.Repeat("x", 256*1024) + "</p>"
+		var worst time.Duration
+		for i := 0; i < 3; i++ {
+			// The database/sql lane's frame probe is throttled to
+			// checkpointProbe, so space the posts past it; otherwise its
+			// cached count would still be below the threshold for the whole
+			// burst and the drain would never check.
+			time.Sleep(checkpointProbe)
+			start := time.Now()
+			if _, err := d.CreateMessage(ctx, user, room, fmt.Sprintf("big-%d", i), body, "big body"); err != nil {
+				t.Fatal(err)
+			}
+			if d := time.Since(start); d > worst {
+				worst = d
+			}
+		}
+		if worst > 2*time.Second {
+			t.Fatalf("large post took %v; the threshold must not add backpressure", worst)
+		}
+		if incomplete := d.writer.restartIncomplete.Load(); incomplete != 0 {
+			t.Fatalf("large bodies caused %d refused restarts", incomplete)
+		}
+		if d.writer.restarts.Load() == 0 {
+			t.Fatal("no restart after large bodies; the overshoot did not recover")
+		}
+		// The WAL stays near the threshold rather than at the hundreds of
+		// megabytes a large body would leave without a restart.
+		if size := walFileSize(path); size > 32<<20 {
+			t.Fatalf("WAL = %d bytes after large bodies, want bounded near the threshold", size)
 		}
 	})
 }
