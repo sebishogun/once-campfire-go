@@ -195,19 +195,15 @@ func (s *Server) testPushNotification(w http.ResponseWriter, r *http.Request, u 
 // for a created message. mentioned carries the mentioned user ids the create
 // path already derived from the body's single parse (ENGINE-45b); nil means
 // "derive here", which the bot and webhook callers rely on.
+//
+// The unread bump owns its budget (deliveryTimeout) and opens it when the hub
+// reports work — a server with no unread subscriber opens no timer, while a
+// server that has one opens a timer and reads the room's members even if that
+// room turns out to be unsubscribed. Either way a slow room broadcast cannot
+// leave this stage with a spent deadline (Lever 5).
 func (s *Server) messageCreated(message database.Message, room database.Room, mentioned []int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	members, err := s.DB.RoomMemberIDs(ctx, room.ID)
-	if err != nil {
+	if err := s.Cable.PublishUnreadBump(room.ID, deliveryTimeout); err != nil {
 		slog.Error("unread notification failed", "error", err)
-	} else {
-		// The payload is shared across members: json.Marshal and the frame
-		// cache only read it, so one map serves the whole loop.
-		payload := map[string]any{"roomId": room.ID}
-		for _, id := range members {
-			s.Cable.PublishStream(ctx, fmt.Sprintf("user_%d_unreads", id), payload)
-		}
 	}
 	// Web Push is the reference's Room::PushMessageJob (the Rails app's
 	// push_message_job.rb): recipients, badge counts and delivery run on the
@@ -226,6 +222,23 @@ func (s *Server) messageCreated(message database.Message, room database.Room, me
 // pushRequestTimeout bounds one push job's queries and delivery attempts, the
 // same budget the inline path gave the whole chain.
 const pushRequestTimeout = 5 * time.Second
+
+// deliveryTimeout is the budget of one post-commit delivery stage: the room
+// broadcast, the unread bump, the webhook candidate lookup. Each stage opens it
+// when it starts its own work (Lever 5), so a stage that is slow or fails
+// cannot consume another stage's budget — the three stages used to share one
+// context, and a slow broadcast then starved the notification and webhook
+// stages that still had work. The push and webhook deliveries themselves run
+// later on the job workers under their own bounds.
+//
+// It is not a promise that no timer is ever created: the broadcast's is opened
+// by its caller for every post, and the unread bump's is opened whenever any
+// client on the server holds an unread subscription, before it reads the room's
+// members. What is free is a stage with no work to start: an empty mention list
+// and a server with no unread subscriber.
+//
+// A var, like the cable package's frame-cache bounds, so tests can shorten it.
+var deliveryTimeout = 5 * time.Second
 
 // deliverPush is the moved Room::PushMessageJob: the recipient query, the
 // per-subscriber badge and payload, and the delivery attempts, all after the

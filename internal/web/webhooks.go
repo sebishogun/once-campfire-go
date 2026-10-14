@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/basecamp/once-campfire-go/internal/database"
 	"github.com/basecamp/once-campfire-go/internal/rails"
@@ -21,8 +20,20 @@ import (
 // user, for direct rooms). mentioned carries the mentioned user ids the
 // create path already derived from the body's single parse (ENGINE-45b);
 // nil means "derive here".
+//
+// The candidate lookup opens its own budget (deliveryTimeout) only after the
+// cheap empty-mention check below, so an idle call costs no timer and a slow
+// earlier stage (the room broadcast) cannot leave it with a spent deadline
+// (Lever 5).
 func (s *Server) enqueueWebhooks(message database.Message, room database.Room, mentioned []int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// A non-direct room with an empty mention list has no candidate bot. The
+	// create path derived that list from the same body parse and hands it in,
+	// so an empty non-nil list is already the answer: no body re-parse, no
+	// candidate query, no timeout context (Lever 5).
+	if room.Type != "Rooms::Direct" && mentioned != nil && len(mentioned) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deliveryTimeout)
 	defer cancel()
 	var candidates []database.User
 	var err error
