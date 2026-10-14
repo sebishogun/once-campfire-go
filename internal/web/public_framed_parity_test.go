@@ -423,12 +423,11 @@ func maskedHead(raw []byte) []byte {
 }
 
 // expectation is what a zstd negotiation case must do with the precomposed
-// lane: frame it, leave it to the map path, or either (both are byte-safe).
+// lane: frame the response, or leave it to the map path.
 type expectation int
 
 const (
-	either expectation = iota
-	mustFrame
+	mustFrame expectation = iota
 	mustNotFrame
 )
 
@@ -454,23 +453,24 @@ func TestPublicChainZstdNegotiationParity(t *testing.T) {
 			}
 			path := "/rooms/" + strconv.FormatInt(room.ID, 10)
 			lastRoom := "last_room=" + strconv.FormatInt(room.ID, 10)
-			// The expectations pin the front's gate where correctness
-			// requires it: with the recorded zstd variant off, a client whose
-			// gzip/identity decision is "identity" while the policy selected
-			// zstd must take the map path (the map path compresses the
-			// identity body; a framed one would go out uncompressed). With the
-			// variant on the application pre-encodes zstd, so the lane is safe
-			// either way and the gate's conservative answer is not pinned.
+			// The expectations pin the gate on the response, not on a
+			// predicted negotiation. With the recorded zstd variant off the
+			// application renders identity for a zstd-preferring client while
+			// the policy selected zstd, so those responses must take the map
+			// path (the map path compresses the identity body; a framed one
+			// would go out uncompressed). With the variant on the application
+			// pre-encodes zstd for every shape here, so every response is a
+			// pass-through and must engage the lane.
 			cases := []struct {
 				label, accept string
 				off, on       expectation
 			}{
-				{"zstd_only", "zstd", mustNotFrame, either},
-				{"zstd_only_gzip_rejected", "zstd, gzip;q=0", mustNotFrame, either},
+				{"zstd_only", "zstd", mustNotFrame, mustFrame},
+				{"zstd_only_gzip_rejected", "zstd, gzip;q=0", mustNotFrame, mustFrame},
 				{"gzip_and_zstd", "gzip, zstd", mustFrame, mustFrame},
 				{"zstd_preferred", "gzip;q=0.5, zstd;q=1", mustFrame, mustFrame},
 				{"gzip_preferred", "gzip;q=1, zstd;q=0.5", mustFrame, mustFrame},
-				{"zstd_identity", "zstd, identity", mustNotFrame, either},
+				{"zstd_identity", "zstd, identity", mustNotFrame, mustFrame},
 			}
 			want := func(c struct {
 				label, accept string
@@ -531,11 +531,14 @@ func TestPublicChainBypassOnNetHTTP(t *testing.T) {
 	lastRoom := "last_room=" + strconv.FormatInt(fixture.room.ID, 10)
 
 	// The reference side hides the precomposed seam at the application level,
-	// which is exactly the map path the gate must fall back to.
-	onServer := httptest.NewServer(composePublic(fixture.on, 0))
-	defer onServer.Close()
-	offServer := httptest.NewServer(composePublic(hidePrecomposed(fixture.off), 0))
-	defer offServer.Close()
+	// which is exactly the map path the gate must fall back to. Each case
+	// builds its own pair so the Range case bypasses an *enabled* cache.
+	servers := func(cacheSize int64) (on, off *httptest.Server) {
+		on = httptest.NewServer(composePublic(fixture.on, cacheSize))
+		off = httptest.NewServer(composePublic(hidePrecomposed(fixture.off), cacheSize))
+		t.Cleanup(func() { on.Close(); off.Close() })
+		return on, off
+	}
 	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
 	defer client.CloseIdleConnections()
 
@@ -565,13 +568,15 @@ func TestPublicChainBypassOnNetHTTP(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name     string
-		rangeArg string
+		name      string
+		cacheSize int64
+		rangeArg  string
 	}{
-		{"cache_disabled", ""},
-		{"range_bypass", "bytes=0-3"},
+		{"cache_disabled", 0, ""},
+		{"range_bypass", 64 << 20, "bytes=0-3"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			onServer, offServer := servers(test.cacheSize)
 			assemblies := fixture.on.recordedAssemblies.Load()
 			status, marker, body := fetch(onServer, test.rangeArg)
 			if status != 200 {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"fmt"
+	"github.com/basecamp/once-campfire-go/internal/httpcompat"
 	"io"
 	"net"
 	"net/http"
@@ -18,10 +19,10 @@ var gzipPool = sync.Pool{New: func() any { writer, _ := gzip.NewWriterLevel(nil,
 
 // encoding delegates to the shared negotiation in internal/httpcompat so the
 // middleware and the application's pre-encoded responses always agree; see
-// httpcompat.Encoding. The answer is memoized alongside the public policy's
-// (public_compression.go): the front consults it on every request, and the
-// parse is a pure function of the header value.
-func encoding(header string) string { return encodingDecisionsFor(header).app }
+// httpcompat.Encoding. It is called directly, not through the public policy's
+// memo: the internal listener's Deflate path must not take a global lock for a
+// parse the selector already does cheaply.
+func encoding(header string) string { return httpcompat.Encoding(header) }
 
 // ResponseEncoding shares the application compressor's negotiation with the
 // body cache (upstream e3a1309). It delegates to the same httpcompat.Encoding

@@ -59,6 +59,38 @@ type precomposedReceiver interface {
 	WritePrecomposed(status int, head []byte, body [][]byte) error
 }
 
+// precomposedGate is implemented by a response policy that must be consulted
+// before a response is framed: it answers whether a body carrying this
+// Content-Encoding ("" for identity) would be transformed by the policy, in
+// which case the map path must serve the response so the policy's own
+// transformation runs. The public compression policy implements it
+// (front.publicResponse.FramePrecomposed); a chain with no gate transforms
+// nothing.
+// The method is exported (like WritePrecomposed) because Go's interface
+// satisfaction is structural across packages: an unexported method could only
+// be implemented inside this package.
+type precomposedGate interface {
+	FramePrecomposed(contentEncoding string) bool
+}
+
+// precomposedFramingAllowed reports whether the chain lets a response with this
+// wire encoding be framed. It is asked at the framing decision, where the
+// response's actual encoding is known, rather than at the writer gate: the
+// policy knows codings the application's selector does not (zstd), so only the
+// response itself can say whether the policy would be a pass-through.
+func precomposedFramingAllowed(w http.ResponseWriter, contentEncoding string) bool {
+	for {
+		if gate, ok := w.(precomposedGate); ok {
+			return gate.FramePrecomposed(contentEncoding)
+		}
+		wrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return true
+		}
+		w = wrapper.Unwrap()
+	}
+}
+
 // findPrecomposedReceiver walks the writer chain (the same walk
 // findResponseBuffer uses) for a precomposedReceiver.
 func findPrecomposedReceiver(w http.ResponseWriter) precomposedReceiver {

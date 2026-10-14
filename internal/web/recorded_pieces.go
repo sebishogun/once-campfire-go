@@ -480,6 +480,15 @@ func (s *Server) writeRecordedPieces(w http.ResponseWriter, r *http.Request, sta
 		if !precomposedEligible(r, h, state) {
 			framed = false
 		}
+		// The response policy is asked here, where this response's actual
+		// wire encoding is known: a body the policy would transform (an
+		// identity body it would compress, because the policy knows zstd and
+		// the application's selector does not) must take the map path, while
+		// an already-encoded body — including a zstd one — is a pass-through
+		// and may be framed.
+		if framed && !precomposedFramingAllowed(w, wireEncoding) {
+			framed = false
+		}
 	}
 	// The ETag spelling is produced only where it is consumed: a framed
 	// request renders it into arena memory (bytes valid until the arena is

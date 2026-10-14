@@ -296,7 +296,7 @@ func (c *Cache) Handler(next http.Handler) http.Handler {
 		eligible := (r.Method == "GET" || r.Method == "HEAD") && r.Header.Get("Upgrade") == "" && r.Header.Get("Range") == "" && len(r.URL.RequestURI()) <= 2048
 		if !eligible || c.capacity <= 0 || c.maxItem <= 0 {
 			w.Header().Set("X-Cache", "bypass")
-			next.ServeHTTP(bypassWriter(w, r), r)
+			next.ServeHTTP(bypassWriter(w), r)
 			return
 		}
 		// Fixed routes replay a captured response instead of the application;
@@ -317,7 +317,7 @@ func (c *Cache) Handler(next http.Handler) http.Handler {
 		w.Header().Set("X-Cache", "miss")
 		fixed := c.FixedRoutes && fixedCandidate(r) && !c.fixedFailed
 		capture := &recordResponse{ResponseWriter: w, max: c.maxItem, captureAlways: fixed}
-		next.ServeHTTP(captureWriterFor(capture, r), r)
+		next.ServeHTTP(captureWriterFor(capture), r)
 		if capture.status == 0 {
 			capture.WriteHeader(200)
 		}

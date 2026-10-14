@@ -18,29 +18,32 @@ package front
 // front's X-Cache marker above all, which the map path emits) and forwards to
 // the next receiver.
 //
-// "Can complete" is two conditions, both about the front rather than about the
-// application, and both expressed as the writer the application sees so that
-// the web layer's yes/no walk cannot be told yes when the answer is no:
+// "Can complete" has two parts, and they are answered where each can be
+// answered honestly:
 //
 //   - the chain must end in a writer that actually emits a precomposed
 //     response (the owned loop). A net/http target listener — the TLS/ACME
 //     public listener, the httptest harness — has none: the front's own
 //     policy wrapper accepts a precomposed call but forwards it, and a
-//     forwarder with nothing behind it would swallow the response;
-//   - no response policy in the chain may transform a body the application
-//     leaves unencoded. The public compression policy knows zstd and the
-//     application's selector does not, so a client that accepts only zstd
-//     gets an identity body from the application and a zstd body from the
-//     map path's policy pass. A framed identity body would go out
-//     uncompressed — four times the bytes — so such a request takes the map
-//     path (see publicResponse.wouldTransform).
+//     forwarder with nothing behind it would swallow the response. That is a
+//     question about the chain, so it is answered here, at the writer the
+//     application sees, and when the answer is no the application is told no:
+//     the capture is opaque, or the policy wrapper's own blocking surface is
+//     installed (bypassWriter). Nothing silently succeeds without an emitter;
+//   - no response policy in the chain may transform the response. That is a
+//     question about the *response*, not the request: the public compression
+//     policy knows zstd and the application's selector does not, so an
+//     identity body on a zstd-selected request would be compressed by the map
+//     path and would go out uncompressed if framed, while an already-encoded
+//     body — zstd included — is a pass-through. The web layer therefore asks
+//     the policy at its framing decision, with the response's actual wire
+//     encoding (precomposedGate, internal/web/framing.go;
+//     publicResponse.framePrecomposed). A framed response is always one the
+//     policy would not have transformed.
 //
-// When either condition fails, the writer the application sees advertises
-// nothing: the capture itself is opaque, or the policy wrapper's own blocking
-// surface is installed (bypassWriter). Nothing silently succeeds without an
-// emitter. The wrappers live inside objects the request already owns — the
-// capture on the miss path, the policy wrapper on the bypass path — so
-// installing a seam adds no allocation.
+// The wrappers live inside objects the request already owns — the capture on
+// the miss path, the policy wrapper on the bypass path — so installing a seam
+// adds no allocation there.
 //
 // The front cache can never store a response the lane emits: the application's
 // recorded pages carry "Cache-Control: max-age=0, private, must-revalidate",
@@ -84,18 +87,12 @@ func emitterIn(w http.ResponseWriter) bool {
 	}
 }
 
-// frameEligible reports whether the front may let the application frame this
-// request: an emitter must exist downstream and no response policy may
-// transform the response. Both conditions are evaluated before the application
-// runs, so the answer is expressed as the writer the application sees.
-func frameEligible(w http.ResponseWriter, r *http.Request) bool {
-	if !emitterIn(w) {
-		return false
-	}
-	if policy, ok := w.(*publicResponse); ok && policy.wouldTransform(r) {
-		return false
-	}
-	return true
+// frameEligible reports whether the front may let the application frame at all
+// on this chain: an emitter must exist downstream. Whether *this response* may
+// be framed is the policy's answer, asked at the framing decision where the
+// response's encoding is known (publicResponse.framePrecomposed).
+func frameEligible(w http.ResponseWriter) bool {
+	return emitterIn(w)
 }
 
 // findPrecomposedReceiver walks the writer chain (the same Unwrap walk the web
@@ -118,8 +115,8 @@ func findPrecomposedReceiver(w http.ResponseWriter) precomposedReceiver {
 // (the application then takes the byte-identical map path), or the capture's
 // own embedded seam when it can. The seam is a field of the capture, so the
 // transparent writer adds no allocation to the request.
-func captureWriterFor(capture *recordResponse, r *http.Request) http.ResponseWriter {
-	if !frameEligible(capture.ResponseWriter, r) {
+func captureWriterFor(capture *recordResponse) http.ResponseWriter {
+	if !frameEligible(capture.ResponseWriter) {
 		return capture
 	}
 	capture.seam = captureWriter{capture}
@@ -129,21 +126,23 @@ func captureWriterFor(capture *recordResponse, r *http.Request) http.ResponseWri
 // bypassWriter returns the writer the application sees on the bypass path (the
 // front cache disabled, or a request it will not serve). The policy wrapper
 // owns both surfaces — the seam and the blocking counterpart — so neither
-// costs an allocation; a chain without a policy wrapper (compression disabled)
-// has no request-owned home and takes a cold-path wrapper.
-func bypassWriter(w http.ResponseWriter, r *http.Request) http.ResponseWriter {
+// costs an allocation. A chain without a policy wrapper (compression disabled)
+// has no request-owned home: the seam is the front's only marker home there, so
+// an emitter-backed bypass installs one wrapper per request, and a chain with
+// no emitter is passed through unchanged (it advertises nothing).
+func bypassWriter(w http.ResponseWriter) http.ResponseWriter {
 	policy, ok := w.(*publicResponse)
 	if ok {
-		if frameEligible(w, r) {
+		if frameEligible(w) {
 			policy.seam = seamWriter{policy}
 			return &policy.seam
 		}
 		policy.block = sealedWriter{policy}
 		return &policy.block
 	}
-	if frameEligible(w, r) {
-		// No policy wrapper: the seam is the front's only marker home, and
-		// this is the only allocation on the bypass path.
+	if frameEligible(w) {
+		// Compression disabled: one wrapper per bypassed request, the
+		// documented cost of the marker home (see the package comment).
 		return &seamWriter{w}
 	}
 	return w

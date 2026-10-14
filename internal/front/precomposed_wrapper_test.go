@@ -21,11 +21,11 @@ func TestPrecomposedBypassSurfaceHidesTheSeam(t *testing.T) {
 	request := httptest.NewRequest("GET", "/rooms/1", nil)
 	request.Header.Set("Accept-Encoding", "gzip")
 	emitting := &publicResponse{ResponseWriter: &emitterWriter{ResponseWriter: &shimWriter{header: http.Header{}}}, request: request, selected: "gzip"}
-	if got := findPrecomposedReceiver(bypassWriter(emitting, request)); got == nil {
+	if got := findPrecomposedReceiver(bypassWriter(emitting)); got == nil {
 		t.Fatal("the bypass seam did not expose a receiver to the emitter")
 	}
 	sealed := &publicResponse{ResponseWriter: &shimWriter{header: http.Header{}}, request: request, selected: "gzip"}
-	if got := findPrecomposedReceiver(bypassWriter(sealed, request)); got != nil {
+	if got := findPrecomposedReceiver(bypassWriter(sealed)); got != nil {
 		t.Fatalf("the blocking surface exposed %T with no emitter downstream", got)
 	}
 	// The policy wrapper itself does advertise the seam: that is exactly why
@@ -46,7 +46,7 @@ func TestPrecomposedBypassWrapperAllocatesNothing(t *testing.T) {
 	var got http.ResponseWriter
 
 	emitting := &publicResponse{ResponseWriter: &emitterWriter{ResponseWriter: &shimWriter{header: http.Header{}}}, request: request, selected: "gzip"}
-	if allocs := testing.AllocsPerRun(200, func() { got = bypassWriter(emitting, request) }); allocs != 0 {
+	if allocs := testing.AllocsPerRun(200, func() { got = bypassWriter(emitting) }); allocs != 0 {
 		t.Fatalf("seam install allocated %v objects, want 0", allocs)
 	}
 	if got != &emitting.seam {
@@ -54,7 +54,7 @@ func TestPrecomposedBypassWrapperAllocatesNothing(t *testing.T) {
 	}
 
 	sealed := &publicResponse{ResponseWriter: &shimWriter{header: http.Header{}}, request: request, selected: "gzip"}
-	if allocs := testing.AllocsPerRun(200, func() { got = bypassWriter(sealed, request) }); allocs != 0 {
+	if allocs := testing.AllocsPerRun(200, func() { got = bypassWriter(sealed) }); allocs != 0 {
 		t.Fatalf("blocking install allocated %v objects, want 0", allocs)
 	}
 	if got != &sealed.block {
@@ -62,7 +62,34 @@ func TestPrecomposedBypassWrapperAllocatesNothing(t *testing.T) {
 	}
 
 	bare := &emitterWriter{ResponseWriter: &shimWriter{header: http.Header{}}}
-	if allocs := testing.AllocsPerRun(200, func() { got = bypassWriter(bare, request) }); allocs != 1 {
+	if allocs := testing.AllocsPerRun(200, func() { got = bypassWriter(bare) }); allocs != 1 {
 		t.Fatalf("no-policy seam install allocated %v objects, want the documented 1", allocs)
+	}
+}
+
+// TestPrecomposedGateAnswersOnTheResponse pins the gate's criterion: the policy
+// is a pass-through for any response carrying a coding of its own — a zstd body
+// the application already encoded included — and for any request whose policy
+// selected nothing. An identity body on a request the policy selected a coding
+// for is the one shape that must take the map path, so the policy's own
+// compression runs.
+func TestPrecomposedGateAnswersOnTheResponse(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		selected string
+		encoding string
+		want     bool
+	}{
+		{"identity_selected_zstd", "zstd", "", false},
+		{"identity_selected_gzip", "gzip", "", false},
+		{"identity_policy_selected_nothing", "", "", true},
+		{"gzip_body_selected_zstd", "zstd", "gzip", true},
+		{"zstd_body_selected_zstd", "zstd", "zstd", true},
+		{"zstd_body_policy_selected_nothing", "", "zstd", true},
+	} {
+		policy := &publicResponse{selected: test.selected}
+		if got := policy.FramePrecomposed(test.encoding); got != test.want {
+			t.Fatalf("%s: FramePrecomposed(%q) with selected %q = %v, want %v", test.name, test.encoding, test.selected, got, test.want)
+		}
 	}
 }
