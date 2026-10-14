@@ -161,14 +161,9 @@ func TestResponseCacheReplayWireParity(t *testing.T) {
 	}
 }
 
-// TestResponseCacheHit304ReproducesFreshHead is the focused regression for the
-// conditional-hit head. On the pre-lever tree a hit's 304 carried the stored
-// entity headers (Cache-Control: max-age=0 and the ETag for the recorded
-// routes; Content-Encoding and Vary for the messages page), while the fresh
-// 304 does not: the recorded routes answer from finish's notModified
-// "no-cache" fallback, and the messages page answers from its validator before
-// rendering. This test fails on that tree and passes with the flavor-aware
-// 304 head.
+// TestResponseCacheHit304ReproducesFreshHead pins the flavor-aware cache policy
+// and coding of conditional hits against fresh renders. Both must also retain
+// the selected ETag; TestConditional304WireValidators checks that explicitly.
 func TestResponseCacheHit304ReproducesFreshHead(t *testing.T) {
 	on, off, cookie, user := testResponseCacheApps(t)
 	roomID := seedReplayRoom(t, on, user)

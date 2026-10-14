@@ -566,13 +566,13 @@ func (s *Server) serveCached304(entry *cachedResponse, w http.ResponseWriter, r 
 }
 
 // apply304Map sets the exact map lines this entry's fresh 304 carried, so the
-// map path composes the identical head: the recorded flavor's no-cache
-// fallback plus its content coding, or the validator flavor's cache-control
-// and ETag.
+// map path composes the identical head: the selected ETag plus the recorded
+// flavor's no-cache fallback and content coding, or the validator flavor's
+// cache-control.
 func (e *cachedResponse) apply304Map(h http.Header) {
+	h.Set("ETag", e.header.Get("ETag"))
 	if e.validator304 {
 		h.Set("Cache-Control", e.header.Get("Cache-Control"))
-		h.Set("ETag", e.header.Get("ETag"))
 		return
 	}
 	h.Set("Cache-Control", "no-cache")

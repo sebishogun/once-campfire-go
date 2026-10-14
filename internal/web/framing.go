@@ -137,14 +137,13 @@ const (
 // pins it against the map path through the fastserve writer. etag is the
 // validator spelling (arena bytes on the framed path); xVersion/xRev are the
 // process-constant values. length is the response body length for the chosen
-// encoding. A 304 status suppresses the entity headers (Content-Encoding,
-// Content-Length, Content-Type) exactly like the map path's notModified del
-// and net/http's suppressedHeaders.
+// encoding. A 304 status retains the ETag and suppresses Content-Length and
+// Content-Type like the map path's notModified and net/http's suppressedHeaders.
 func (s *Server) appendRecordedHead(dst []byte, etag []byte, lastModified string, encoding string, length int, status int) []byte {
 	if status == http.StatusNotModified {
 		// The map path's 304 is composed at finish from the restored map:
 		// the finish-time Cache-Control fallback ("no-cache"), the security
-		// headers, Date and the close header — no ETag or Vary. It keeps the
+		// headers, selected ETag, Date and the close header. It keeps the
 		// Content-Encoding (net/http's suppressedHeaders drops only
 		// Content-Type, Content-Length and Transfer-Encoding), so the framed
 		// 304 must keep it too or the two paths' 304s would differ.
@@ -154,6 +153,9 @@ func (s *Server) appendRecordedHead(dst []byte, etag []byte, lastModified string
 			dst = append(dst, encoding...)
 			dst = append(dst, '\r', '\n')
 		}
+		dst = append(dst, "Etag: "...)
+		dst = append(dst, etag...)
+		dst = append(dst, '\r', '\n')
 		dst = append(dst, "Referrer-Policy: strict-origin-when-cross-origin\r\n"...)
 		return s.appendRecordedSecurity(dst)
 	}
@@ -306,7 +308,7 @@ func (s *Server) buildReplayHead(live http.Header, framed []byte, length int, xc
 
 // buildReplay304 renders the immutable 304 replay block for the recorded
 // flavor: the head lane's own 304 (Cache-Control: no-cache, the response's
-// content coding and the security headers), with the front's X-Cache marker
+// ETag, content coding and security headers), with the front's X-Cache marker
 // baked in like the 200 block's. The validator flavor does not use a block —
 // its fresh 304 carries no coding, so its hit takes the map path (see
 // serveCached304) — and passes nil.
@@ -314,7 +316,7 @@ func (s *Server) buildReplay304(header http.Header, validator bool, xcache strin
 	if validator {
 		return nil
 	}
-	block := s.appendRecordedHead(nil, nil, "", header.Get("Content-Encoding"), 0, http.StatusNotModified)
+	block := s.appendRecordedHead(nil, []byte(header.Get("ETag")), "", header.Get("Content-Encoding"), 0, http.StatusNotModified)
 	if xcache != "" {
 		block = spliceHeadLine(block, "X-Cache", xcache)
 	}
