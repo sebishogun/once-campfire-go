@@ -206,6 +206,11 @@ func (s *Server) appendRecordedSecurity(dst []byte) []byte {
 // values are the same bytes ServeHTTP and render set on the non-framed path,
 // so the fallback response is byte-identical to one that never framed.
 func (s *Server) restoreRecordedHeaders(h http.Header) {
+	s.restoreSecurityHeaders(h)
+	h.Set("Content-Type", "text/html; charset=utf-8")
+}
+
+func (s *Server) restoreSecurityHeaders(h http.Header) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "SAMEORIGIN")
 	h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -213,7 +218,6 @@ func (s *Server) restoreRecordedHeaders(h http.Header) {
 	h.Set("X-Permitted-Cross-Domain-Policies", "none")
 	h.Set("X-Version", s.xVersion)
 	h.Set("X-Rev", s.xRev)
-	h.Set("Content-Type", "text/html; charset=utf-8")
 }
 
 // precomposedEligible reports whether the request may take the precomposed
@@ -221,6 +225,11 @@ func (s *Server) restoreRecordedHeaders(h http.Header) {
 // session (a session commit would have to reach the emitted head). state may
 // be nil when no browser session exists (bench writers).
 func precomposedEligible(r *http.Request, h http.Header, state *browserSession) bool {
+	// The precomposed writer bypasses the transport's body-drain and
+	// Expect decisions. Only bodyless requests can use this lane.
+	if r.ContentLength != 0 || len(r.TransferEncoding) != 0 || r.Header.Get("Expect") != "" || r.Body != nil && r.Body != http.NoBody {
+		return false
+	}
 	if !protoAtLeastHTTP11(r) {
 		return false
 	}

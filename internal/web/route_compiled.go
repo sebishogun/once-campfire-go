@@ -389,11 +389,15 @@ func (cr *crRoute) match(b []byte, caps *[maxCRCaptures]string) (n int, ok bool)
 // matcher cannot handle (a non-\n-free path, or a table that did not compile)
 // delegates to legacyRecognize.
 func compiledRecognize(method, path string) (*routeContract, map[string]string, error) {
+	return compiledRecognizeMode(method, path, true)
+}
+
+func compiledRecognizeMode(method, path string, capture bool) (*routeContract, map[string]string, error) {
 	compiledOnce.Do(buildCompiled)
 	if !compiledReady.Load() || strings.ContainsRune(path, '\n') {
 		// '.' and [^...] never match "\n" in the regex forms while the
 		// compiled scans would — fall back rather than risk a divergence.
-		return legacyRecognize(method, path)
+		return legacyRecognizeMode(method, path, capture)
 	}
 	if method == "HEAD" {
 		method = "GET"
@@ -425,8 +429,11 @@ func compiledRecognize(method, path string) (*routeContract, map[string]string, 
 			continue
 		}
 		c := &contracts[i]
-		params := make(map[string]string, n+2)
-		if cr.bot {
+		var params map[string]string
+		if capture {
+			params = make(map[string]string, n+2)
+		}
+		if capture && cr.bot {
 			params["format"] = "json"
 		}
 		for k := 0; k < n; k++ {
@@ -441,7 +448,12 @@ func compiledRecognize(method, path string) (*routeContract, map[string]string, 
 			if !utf8.ValidString(value) {
 				return nil, nil, errors.New("invalid UTF-8")
 			}
-			params[cr.names[k]] = value
+			if capture {
+				params[cr.names[k]] = value
+			}
+		}
+		if !capture {
+			return c, nil, nil
 		}
 		params["controller"] = cr.controller
 		params["action"] = cr.action

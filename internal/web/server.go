@@ -519,12 +519,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// The process-constant version headers are the one ServeHTTP header
 		// pair that varies by env at startup; a framed request carries them
 		// in the head block instead of the map.
-		if buffered, ok := w.(*responseBuffer); !ok || !buffered.framed {
+		if buffered := findResponseBuffer(w); buffered == nil || !buffered.framed {
 			w.Header().Set("X-Version", s.xVersion)
 			w.Header().Set("X-Rev", s.xRev)
 		}
 	}
-	if buffered, ok := w.(*responseBuffer); !ok || !buffered.framed {
+	if buffered := findResponseBuffer(w); buffered == nil || !buffered.framed {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -542,7 +542,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if route, _, _ := recognize(r.Method, r.URL.EscapedPath()); route != nil && route.bot {
+	if route, _ := recognizeContract(r.Method, r.URL.EscapedPath()); route != nil && route.bot {
 		s.routeHTTP(w, r)
 		return
 	}
@@ -1360,7 +1360,8 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request, u database.User)
 		s.fail(w, err)
 		return
 	}
-	if s.searchCache != nil && generationOK {
+	info := requestMetadata(r.Context())
+	if s.searchCache != nil && generationOK && (info == nil || !info.generationChecked || info.generationCurrent) {
 		// Store only when the generation and versions are still the ones the
 		// reads began under: a write that committed mid-request (local or
 		// from another connection) must not be admitted under the newer

@@ -192,7 +192,7 @@ func (s *Server) beginResponseCache(r *http.Request) {
 	if (r.Method != "GET" && r.Method != "HEAD") || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 		return
 	}
-	route, _, err := recognize(r.Method, r.URL.EscapedPath())
+	route, err := recognizeContract(r.Method, r.URL.EscapedPath())
 	if err != nil || route == nil {
 		return
 	}
@@ -591,6 +591,9 @@ func (e *cachedResponse) apply304Map(h http.Header) {
 func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 	info := requestMetadata(r.Context())
 	if info == nil || info.response == nil {
+		return
+	}
+	if info.generationChecked && !info.generationCurrent {
 		return
 	}
 	round := info.response

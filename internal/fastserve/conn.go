@@ -494,6 +494,9 @@ func (c *conn) rawWrite(b []byte) error {
 func (c *conn) recordWriteError(err error) error {
 	if c.writeErr == nil && err != nil {
 		c.writeErr = err
+		if c.observer.cancel != nil {
+			c.observer.cancel()
+		}
 	}
 	return c.writeErr
 }

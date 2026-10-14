@@ -458,19 +458,19 @@ func TestPublicChainZstdNegotiationParity(t *testing.T) {
 			// application renders identity for a zstd-preferring client while
 			// the policy selected zstd, so those responses must take the map
 			// path (the map path compresses the identity body; a framed one
-			// would go out uncompressed). With the variant on the application
-			// pre-encodes zstd for every shape here, so every response is a
-			// pass-through and must engage the lane.
+			// would go out uncompressed). Multi-piece zstd shapes renegotiate
+			// against gzip and identity, so zstd-only clients likewise take
+			// the map path even when recorded zstd is enabled.
 			cases := []struct {
 				label, accept string
 				off, on       expectation
 			}{
-				{"zstd_only", "zstd", mustNotFrame, mustFrame},
-				{"zstd_only_gzip_rejected", "zstd, gzip;q=0", mustNotFrame, mustFrame},
+				{"zstd_only", "zstd", mustNotFrame, mustNotFrame},
+				{"zstd_only_gzip_rejected", "zstd, gzip;q=0", mustNotFrame, mustNotFrame},
 				{"gzip_and_zstd", "gzip, zstd", mustFrame, mustFrame},
 				{"zstd_preferred", "gzip;q=0.5, zstd;q=1", mustFrame, mustFrame},
 				{"gzip_preferred", "gzip;q=1, zstd;q=0.5", mustFrame, mustFrame},
-				{"zstd_identity", "zstd, identity", mustNotFrame, mustFrame},
+				{"zstd_identity", "zstd, identity", mustNotFrame, mustNotFrame},
 			}
 			want := func(c struct {
 				label, accept string

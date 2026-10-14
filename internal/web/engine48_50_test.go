@@ -124,7 +124,7 @@ func TestRecordedZstdResponse(t *testing.T) {
 
 	// zstd-enabled server, multi-piece page: the zstd-preferring client gets
 	// the single-member gzip splice, never a multi-frame zstd body.
-	zstdEx := recordedGet(t, client, onServer, path, "zstd", "", cookie)
+	zstdEx := recordedGet(t, client, onServer, path, "zstd, gzip;q=0.5", "", cookie)
 	if zstdEx.encoding != "gzip" {
 		t.Fatalf("zstd client on a multi-piece page got Content-Encoding %q, want gzip", zstdEx.encoding)
 	}
@@ -187,7 +187,7 @@ func TestRecordedZstdDegradeToGzip(t *testing.T) {
 	path := fmt.Sprintf("/rooms/%d", room.ID)
 	recordedGet(t, client, server, path, "gzip", "", cookie)
 	app.zstdPieces = true
-	exchange := recordedGet(t, client, server, path, "zstd", "", cookie)
+	exchange := recordedGet(t, client, server, path, "zstd, gzip;q=0.5", "", cookie)
 	if exchange.encoding != "gzip" {
 		t.Fatalf("zstd-less cache answered %q for a zstd client, want gzip", exchange.encoding)
 	}

@@ -131,6 +131,11 @@ func (w *responseBuffer) finish(r *http.Request) {
 	// fallback validator can never be recomputed on a hit. The recorded paths
 	// set their own validator before finish and are skipped here.
 	if target == nil {
+		if w.framed && w.server != nil {
+			// The writer gate also covers redirects, errors and cache-hit
+			// fallbacks. Only a completed frame carries these headers itself.
+			w.server.restoreSecurityHeaders(w.Header())
+		}
 		w.finalizeEntity()
 	}
 	// The completed-response cache stores the wire body before emission, so

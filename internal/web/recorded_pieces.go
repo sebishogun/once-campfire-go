@@ -375,26 +375,23 @@ func (s *Server) writeRecordedPieces(w http.ResponseWriter, r *http.Request, sta
 		}
 		return false, nil
 	}
-	// A cache filled before zstd frames were enabled holds pieces without
-	// zstd frames; degrade such requests to gzip (whose fragments every piece
-	// carries) rather than assembling a zstd body from nothing.
-	if encoding == "zstd" && !piecesCarryZstd(shell, payload) {
-		encoding = "gzip"
-		needGzip = true
-		needZstd = false
-	}
+	// A cache filled before zstd frames were enabled may lack zstd frames.
 	// Chromium decodes only the first frame of a multi-frame zstd stream —
 	// the same probe that showed it decoding only the first gzip member — so
 	// a multi-piece zstd body would render the shell without its messages in
 	// browsers. These pages always assemble several pieces (shell segments
-	// plus the message payload), so every zstd-preferring request degrades
-	// to the single-member gzip splice; the zstd frames stay in the cache
+	// plus the message payload), so renegotiate using gzip and identity for
+	// these shapes. A rejected coding is never a fallback. The frames stay in the cache
 	// for clients and shapes that assemble one frame, and piececache keeps
 	// the multi-frame assembly for the non-browser corpus. This is why
 	// CAMPFIRE_RECORDED_ZSTD defaults off (see server.go).
-	if encoding == "zstd" && zstdMultiPiece(shell) {
-		encoding = "gzip"
-		needGzip = true
+	if encoding == "zstd" && (!piecesCarryZstd(shell, payload) || zstdMultiPiece(shell)) {
+		encoding = clientContentEncoding(r, false)
+		if encoding == "" {
+			w.WriteHeader(http.StatusNotAcceptable)
+			return true, nil
+		}
+		needGzip = encoding == "gzip"
 		needZstd = false
 	}
 

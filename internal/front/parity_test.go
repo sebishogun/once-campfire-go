@@ -195,6 +195,16 @@ func TestHitReplayParity(t *testing.T) {
 	}
 	for _, c := range cases {
 		fill := captureRaw(t, client, "GET", server.URL, c.path, c.headers)
+		if c.path == benchAvatarPath {
+			if fill.header.Get("X-Cache") != "bypass" {
+				t.Fatal("dynamic avatar must bypass shared replay")
+			}
+			for i := 0; i < 3; i++ {
+				fresh := captureRaw(t, client, "GET", server.URL, c.path, c.headers)
+				assertWireEqual(t, c.path, fresh, fill)
+			}
+			continue
+		}
 		if fill.header.Get("X-Cache") != "miss" {
 			t.Fatalf("%s fill X-Cache = %q", c.path, fill.header.Get("X-Cache"))
 		}

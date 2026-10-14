@@ -291,9 +291,24 @@ func (w *recordResponse) Flush() {
 	}
 	http.NewResponseController(w.ResponseWriter).Flush()
 }
+
+// Dynamic routes normalize repeated slashes before recognition. Classify the
+// same decoded segments here without allocating a normalized path.
+func dynamicMediaPath(path string) bool {
+	first, rest, _ := strings.Cut(strings.TrimLeft(path, "/"), "/")
+	second, _, _ := strings.Cut(strings.TrimLeft(rest, "/"), "/")
+	return first == "users" || first == "rails" && second == "active_storage" || first == "account" && (second == "logo" || strings.HasPrefix(second, "logo."))
+}
+
 func (c *Cache) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		eligible := (r.Method == "GET" || r.Method == "HEAD") && r.Header.Get("Upgrade") == "" && r.Header.Get("Range") == "" && len(r.URL.RequestURI()) <= 2048
+		// Dynamic media must recheck session/capability validity and storage
+		// existence on every request, including after revocation or deletion.
+		// Use the decoded path so escaped route spellings cannot bypass this.
+		if dynamicMediaPath(r.URL.Path) {
+			eligible = false
+		}
 		if !eligible || c.capacity <= 0 || c.maxItem <= 0 {
 			w.Header().Set("X-Cache", "bypass")
 			next.ServeHTTP(bypassWriter(w), r)

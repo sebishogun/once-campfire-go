@@ -171,13 +171,12 @@ func TestRecordedLaneEngages(t *testing.T) {
 		t.Fatal("recorded replay carried no body")
 	}
 
-	// The avatar entry (an encoded body over the 2048-byte auto-Content-Length
-	// budget) must take the lane too (the receiver frames it as one chunk).
+	// Dynamic avatars must always reach the application for authentication.
 	serve(benchAvatarPath)
 	serve(benchAvatarPath)
-	avatar := serve(benchAvatarPath).calls
-	if len(avatar) != 1 || len(avatar[0].body) <= 2048 {
-		t.Fatalf("avatar recorded calls %d body %d, want one over-budget replay", len(avatar), len(avatar[0].body))
+	avatar := serve(benchAvatarPath)
+	if len(avatar.calls) != 0 || avatar.header.Get("X-Cache") != "bypass" {
+		t.Fatalf("avatar replayed: calls=%d cache=%q", len(avatar.calls), avatar.header.Get("X-Cache"))
 	}
 
 	// A matching If-None-Match uses the precomposed 304 block: no entity

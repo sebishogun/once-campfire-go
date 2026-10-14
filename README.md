@@ -499,6 +499,13 @@ and `bench/results/final4-native-20261007/`.
 
 ## Known differences
 
+The public front cache bypasses dynamic user media, account logos and Active
+Storage routes. Avatar requests retain application session authentication;
+signed disk requests recheck capability expiry and file existence on every
+request. Session revocation, capability expiry and media deletion therefore
+cannot be bypassed by the server's shared response cache. Existing browser
+cache lifetimes in the media response headers remain reference-compatible.
+
 Browser writes use Rust’s token-free Fetch Metadata policy: exact `same-origin` or
 `same-site`, a matching Origin when provided, and absent metadata only on plain
 HTTP with TLS disabled. Signed disk uploads retain their authenticated capability

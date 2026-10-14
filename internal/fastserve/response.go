@@ -319,7 +319,9 @@ func (w *response) finish() error {
 	// Close the request body regardless of reuse (net/http parity); the
 	// drain already consumed it in the common case, so this is idempotent.
 	if w.req.Body != nil {
-		w.req.Body.Close()
+		if err := w.req.Body.Close(); err != nil {
+			w.closeAfterReply = true
+		}
 	}
 	return w.c.writeErr
 }
