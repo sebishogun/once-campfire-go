@@ -193,14 +193,16 @@ ENV HTTP_WRITE_TIMEOUT=300
 
 # GC policy knobs: CAMPFIRE_GOGC (GOGC target percentage, or `off`) and
 # CAMPFIRE_GOMEMLIMIT (bytes, or a MiB/GiB suffix) are read by the binary at startup.
-# CAMPFIRE_GOGC=200 is the ENGINE-47 measurement's winner: on the harness read workload it
-# halves GC CPU per request (2.91 -> 1.56 us) and cuts total CPU per request by 6.9% (median of
-# 18 paired runs; the identically-configured noise-floor arm sits at 1.00), at the cost of a
-# higher peak RSS (71 -> 87 MiB). CAMPFIRE_GOMEMLIMIT is deliberately left unset: a 256 MiB
-# limit was measured as non-binding and indistinguishable from no limit at that peak, and a
-# fixed limit would only risk collector thrash in memory-heavy workloads. Set either knob to
-# override; `CAMPFIRE_GOGC=100` rolls the default back.
-# See bench/results/gc-policy-opt-runtime/README.md.
+# CAMPFIRE_GOGC=200 is the ENGINE-47 measurement's winner: on the harness read workload, with
+# aligned-window per-request accounting, it halves GC CPU per request (1.65 -> 0.84 us) and cuts
+# total CPU per request by 4.9% (23.84 -> 22.66 us; pooled paired ratio 0.957 over 64 pairs, the
+# identically-configured noise-floor arm at 1.001), at the cost of a higher peak RSS (74 -> 87
+# MiB). CAMPFIRE_GOMEMLIMIT is deliberately left unset: a 256 MiB limit was measured as
+# non-binding and indistinguishable from no limit at that peak, and a fixed limit would only risk
+# collector thrash in memory-heavy workloads. Set either knob to override; `CAMPFIRE_GOGC=100`
+# rolls the default back.
+# See bench/results/gc-policy-opt-runtime/README.md (and pgo-on-off/ for the PGO lever, where no
+# benefit was detectable on this workload).
 
 # Set version and revision
 ARG APP_VERSION
