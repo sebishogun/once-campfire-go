@@ -2,7 +2,22 @@
 
 Minimal direct-SQLite binding used by `internal/fastdb`. It provides only the
 C API calls the read layer needs: `sqlite3_open_v2`, `prepare_v2`, `bind_*`,
-`step`, `column_*`, `reset`, `clear_bindings`, `finalize` and `busy_timeout`.
+`step`, `column_*`, `reset`, `clear_bindings`, `finalize` and `busy_timeout`,
+plus two fused helpers that perform a whole observation in one cgo transition:
+
+- `Stmt.DataVersion` — step, column read and reset for `PRAGMA data_version`,
+  the generation gate's per-request observation (three transitions per read
+  before the fusion, one now).
+- `Stmt.StepRow` — step and capture of the row's columns into a C row buffer
+  owned by the statement, read back through `CellType`/`CellInt64`/`CellBytes`.
+  The auth fast path's ten-column join read costs four transitions per warm
+  request (`clear_bindings`, `bind_text`, `step_row`, the release reset)
+  instead of one per column access.
+
+The capture order per column is the one the live accessors use — type, then the
+integer, then bytes followed by text — so a captured cell reports exactly what
+`ColumnType`/`ColumnInt64`/`ColumnBytes` report for the same row; a statement
+wider than the buffer is refused rather than truncated.
 
 ## Where SQLite comes from
 
@@ -39,4 +54,9 @@ declarations.
 - `ColumnBytes` returns a view of SQLite-owned memory that is valid only until
   the next `Step`, `Reset` or `Finalize`. `ColumnText` and fastdb's
   `ColumnTextInto` copy into Go memory first.
+- `StepRow` captures into a C row buffer owned by the statement (allocated on
+  first use, freed by `Finalize`), so no Go pointer crosses into C and no Go
+  object holds SQLite memory. `CellBytes` exposes the same
+  valid-until-`Step`/`Reset` view as `ColumnBytes`, and the fastdb decode copies
+  or decodes it before the statement is reset.
 - No Go pointer is stored in C memory at any point.
