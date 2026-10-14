@@ -1,0 +1,4250 @@
+[
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 1,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 119766.2,
+        "p99_ms": 0.58,
+        "ok": 239586,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 145571.6,
+        "p99_ms": 0.437,
+        "ok": 291198,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 148055.1,
+        "p99_ms": 0.426,
+        "ok": 296159,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 155509.6,
+        "p99_ms": 0.397,
+        "ok": 311066,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.19 13.58 15.02 6/4156 857655",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 69616,
+    "rss_final_kib": 68996,
+    "cpu_seconds": 40.96,
+    "requests": 1138009,
+    "load_end": "9.71 13.47 14.96 4/4001 861897",
+    "server_log_bytes": 172650225,
+    "server_log_lines": 1560427,
+    "gc_cpu_ms": 2945.3320000000035,
+    "gc_cycles": 2397,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.588,
+    "cpu_us_per_request": 35.993,
+    "log": "go100-1.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 1,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 133402.3,
+        "p99_ms": 0.489,
+        "ok": 266853,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 140285.1,
+        "p99_ms": 0.459,
+        "ok": 280612,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 151709.7,
+        "p99_ms": 0.402,
+        "ok": 303463,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 151658.1,
+        "p99_ms": 0.407,
+        "ok": 303350,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.71 13.47 14.96 4/3996 861904",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 75640,
+    "rss_final_kib": 67536,
+    "cpu_seconds": 41.07,
+    "requests": 1154278,
+    "load_end": "9.83 13.37 14.91 6/4181 863795",
+    "server_log_bytes": 174851362,
+    "server_log_lines": 1581609,
+    "gc_cpu_ms": 2938.0639999999994,
+    "gc_cycles": 2442,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.545,
+    "cpu_us_per_request": 35.581,
+    "log": "gonull-1.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 1,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 134142.7,
+        "p99_ms": 0.441,
+        "ok": 268326,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 131012.6,
+        "p99_ms": 0.474,
+        "ok": 262065,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 150452.7,
+        "p99_ms": 0.376,
+        "ok": 300975,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 146469.0,
+        "p99_ms": 0.389,
+        "ok": 292978,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.83 13.37 14.91 9/4216 863967",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 82056,
+    "rss_final_kib": 78688,
+    "cpu_seconds": 40.7,
+    "requests": 1124344,
+    "load_end": "10.62 13.37 14.89 4/4132 866379",
+    "server_log_bytes": 169168082,
+    "server_log_lines": 1529869,
+    "gc_cpu_ms": 1669.045,
+    "gc_cycles": 1091,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.484,
+    "cpu_us_per_request": 36.199,
+    "log": "go200-1.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 1,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 120801.2,
+        "p99_ms": 0.516,
+        "ok": 241639,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 128659.1,
+        "p99_ms": 0.468,
+        "ok": 257374,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 121599.1,
+        "p99_ms": 0.522,
+        "ok": 243237,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 131468.0,
+        "p99_ms": 0.451,
+        "ok": 263003,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "10.62 13.37 14.89 6/4120 866379",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 83956,
+    "rss_final_kib": 76932,
+    "cpu_seconds": 40.08,
+    "requests": 1005253,
+    "load_end": "10.92 13.34 14.86 8/4229 868681",
+    "server_log_bytes": 150337109,
+    "server_log_lines": 1359091,
+    "gc_cpu_ms": 1780.8619999999976,
+    "gc_cycles": 962,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.772,
+    "cpu_us_per_request": 39.871,
+    "log": "go200+256MiB-1.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 2,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 123771.1,
+        "p99_ms": 0.539,
+        "ok": 247578,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 141125.3,
+        "p99_ms": 0.457,
+        "ok": 282298,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 144389.3,
+        "p99_ms": 0.444,
+        "ok": 288829,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 150761.8,
+        "p99_ms": 0.416,
+        "ok": 301578,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "10.92 13.34 14.86 5/4186 868693",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 70384,
+    "rss_final_kib": 66916,
+    "cpu_seconds": 41.13,
+    "requests": 1120283,
+    "load_end": "10.05 13.03 14.73 3/4068 870493",
+    "server_log_bytes": 170487715,
+    "server_log_lines": 1541437,
+    "gc_cpu_ms": 2973.1460000000015,
+    "gc_cycles": 2376,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.654,
+    "cpu_us_per_request": 36.714,
+    "log": "gonull-2.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 2,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 138512.6,
+        "p99_ms": 0.413,
+        "ok": 277071,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 137676.0,
+        "p99_ms": 0.453,
+        "ok": 275393,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 151742.6,
+        "p99_ms": 0.369,
+        "ok": 303546,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 154918.4,
+        "p99_ms": 0.345,
+        "ok": 309884,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "10.05 13.03 14.73 6/4053 870904",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 89188,
+    "rss_final_kib": 78456,
+    "cpu_seconds": 41.02,
+    "requests": 1165894,
+    "load_end": "9.48 12.81 14.64 5/4026 872769",
+    "server_log_bytes": 176808680,
+    "server_log_lines": 1600854,
+    "gc_cpu_ms": 1621.432000000002,
+    "gc_cycles": 1141,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.391,
+    "cpu_us_per_request": 35.183,
+    "log": "go200-2.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 2,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 135431.1,
+        "p99_ms": 0.423,
+        "ok": 270909,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 151419.3,
+        "p99_ms": 0.365,
+        "ok": 302888,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 151605.5,
+        "p99_ms": 0.366,
+        "ok": 303269,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 152926.1,
+        "p99_ms": 0.358,
+        "ok": 305892,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.48 12.81 14.64 1/4012 872769",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 88464,
+    "rss_final_kib": 78248,
+    "cpu_seconds": 41.36,
+    "requests": 1182958,
+    "load_end": "9.30 12.61 14.55 3/4061 874627",
+    "server_log_bytes": 180126357,
+    "server_log_lines": 1627393,
+    "gc_cpu_ms": 1604.500999999999,
+    "gc_cycles": 1159,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.356,
+    "cpu_us_per_request": 34.963,
+    "log": "go200+256MiB-2.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 2,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 128868.6,
+        "p99_ms": 0.506,
+        "ok": 257794,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 145121.4,
+        "p99_ms": 0.43,
+        "ok": 290288,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 144282.5,
+        "p99_ms": 0.437,
+        "ok": 288612,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 151114.1,
+        "p99_ms": 0.414,
+        "ok": 302275,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.30 12.61 14.55 1/4050 874630",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 69492,
+    "rss_final_kib": 66736,
+    "cpu_seconds": 40.94,
+    "requests": 1138969,
+    "load_end": "8.78 12.39 14.45 1/4038 875696",
+    "server_log_bytes": 173630594,
+    "server_log_lines": 1569060,
+    "gc_cpu_ms": 2899.1490000000026,
+    "gc_cycles": 2427,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.545,
+    "cpu_us_per_request": 35.945,
+    "log": "go100-2.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 3,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 134303.0,
+        "p99_ms": 0.456,
+        "ok": 268653,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 155368.7,
+        "p99_ms": 0.352,
+        "ok": 310783,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 152366.8,
+        "p99_ms": 0.365,
+        "ok": 304791,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 158307.7,
+        "p99_ms": 0.339,
+        "ok": 316660,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.78 12.39 14.45 1/4022 875709",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 90516,
+    "rss_final_kib": 78224,
+    "cpu_seconds": 41.04,
+    "requests": 1200887,
+    "load_end": "8.81 12.21 14.36 7/4079 877099",
+    "server_log_bytes": 179656334,
+    "server_log_lines": 1625642,
+    "gc_cpu_ms": 1592.673,
+    "gc_cycles": 1156,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.326,
+    "cpu_us_per_request": 34.175,
+    "log": "go200-3.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 3,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 140851.5,
+        "p99_ms": 0.406,
+        "ok": 281752,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 155558.3,
+        "p99_ms": 0.353,
+        "ok": 311162,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 151538.8,
+        "p99_ms": 0.366,
+        "ok": 303129,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 160980.0,
+        "p99_ms": 0.334,
+        "ok": 322007,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.81 12.21 14.36 2/4066 877099",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 85912,
+    "rss_final_kib": 78636,
+    "cpu_seconds": 41.49,
+    "requests": 1218050,
+    "load_end": "9.22 12.19 14.33 5/4124 877800",
+    "server_log_bytes": 185762322,
+    "server_log_lines": 1679269,
+    "gc_cpu_ms": 1587.4919999999993,
+    "gc_cycles": 1196,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.303,
+    "cpu_us_per_request": 34.063,
+    "log": "go200+256MiB-3.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 3,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 125155.9,
+        "p99_ms": 0.524,
+        "ok": 250350,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 145889.7,
+        "p99_ms": 0.431,
+        "ok": 291818,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 141881.5,
+        "p99_ms": 0.443,
+        "ok": 283796,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 149178.8,
+        "p99_ms": 0.418,
+        "ok": 298400,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.22 12.19 14.33 3/4057 877847",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 71240,
+    "rss_final_kib": 66764,
+    "cpu_seconds": 41.11,
+    "requests": 1124364,
+    "load_end": "9.36 12.08 14.26 4/4026 879110",
+    "server_log_bytes": 171852859,
+    "server_log_lines": 1552486,
+    "gc_cpu_ms": 2917.5679999999948,
+    "gc_cycles": 2401,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.595,
+    "cpu_us_per_request": 36.563,
+    "log": "go100-3.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 3,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 131982.5,
+        "p99_ms": 0.48,
+        "ok": 264001,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 147374.3,
+        "p99_ms": 0.421,
+        "ok": 294802,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 148273.4,
+        "p99_ms": 0.42,
+        "ok": 296602,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 150285.2,
+        "p99_ms": 0.406,
+        "ok": 300614,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.36 12.08 14.26 1/4021 879117",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 72452,
+    "rss_final_kib": 71616,
+    "cpu_seconds": 41.29,
+    "requests": 1156019,
+    "load_end": "9.22 11.96 14.20 2/4028 879555",
+    "server_log_bytes": 176984869,
+    "server_log_lines": 1599226,
+    "gc_cpu_ms": 2946.3640000000064,
+    "gc_cycles": 2473,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.549,
+    "cpu_us_per_request": 35.717,
+    "log": "gonull-3.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 4,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 140747.1,
+        "p99_ms": 0.402,
+        "ok": 281549,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 145578.1,
+        "p99_ms": 0.384,
+        "ok": 291203,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 142484.0,
+        "p99_ms": 0.398,
+        "ok": 285023,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 148522.7,
+        "p99_ms": 0.368,
+        "ok": 297098,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.22 11.96 14.20 1/4016 879555",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 89248,
+    "rss_final_kib": 77892,
+    "cpu_seconds": 41.26,
+    "requests": 1154873,
+    "load_end": "8.88 11.75 14.09 4/4112 883236",
+    "server_log_bytes": 176256109,
+    "server_log_lines": 1592838,
+    "gc_cpu_ms": 1621.913,
+    "gc_cycles": 1140,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.404,
+    "cpu_us_per_request": 35.727,
+    "log": "go200+256MiB-4.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 4,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 129743.8,
+        "p99_ms": 0.496,
+        "ok": 259532,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 146176.5,
+        "p99_ms": 0.423,
+        "ok": 292393,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 147333.6,
+        "p99_ms": 0.418,
+        "ok": 294707,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 150786.6,
+        "p99_ms": 0.403,
+        "ok": 301612,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.88 11.75 14.09 2/4110 883422",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 71416,
+    "rss_final_kib": 67668,
+    "cpu_seconds": 41.32,
+    "requests": 1148244,
+    "load_end": "8.37 11.54 14.00 3/4031 883878",
+    "server_log_bytes": 175808283,
+    "server_log_lines": 1588710,
+    "gc_cpu_ms": 2945.586999999998,
+    "gc_cycles": 2440,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.565,
+    "cpu_us_per_request": 35.985,
+    "log": "go100-4.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 4,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 125434.5,
+        "p99_ms": 0.539,
+        "ok": 250904,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 142610.0,
+        "p99_ms": 0.452,
+        "ok": 285265,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 146512.5,
+        "p99_ms": 0.426,
+        "ok": 293077,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 150941.2,
+        "p99_ms": 0.406,
+        "ok": 301926,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.37 11.54 14.00 6/4059 884201",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 72648,
+    "rss_final_kib": 66904,
+    "cpu_seconds": 41.04,
+    "requests": 1131172,
+    "load_end": "8.58 11.43 13.92 9/4177 886351",
+    "server_log_bytes": 173353325,
+    "server_log_lines": 1567199,
+    "gc_cpu_ms": 2899.159999999995,
+    "gc_cycles": 2413,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.563,
+    "cpu_us_per_request": 36.281,
+    "log": "gonull-4.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 4,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 127173.1,
+        "p99_ms": 0.468,
+        "ok": 254399,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 143887.0,
+        "p99_ms": 0.397,
+        "ok": 287823,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 150159.5,
+        "p99_ms": 0.373,
+        "ok": 300366,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 159228.7,
+        "p99_ms": 0.341,
+        "ok": 318498,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.58 11.43 13.92 5/4180 886380",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 80532,
+    "rss_final_kib": 79056,
+    "cpu_seconds": 41.02,
+    "requests": 1161086,
+    "load_end": "8.49 11.32 13.86 2/5255 891305",
+    "server_log_bytes": 175730521,
+    "server_log_lines": 1590480,
+    "gc_cpu_ms": 1616.3390000000002,
+    "gc_cycles": 1124,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.392,
+    "cpu_us_per_request": 35.329,
+    "log": "go200-4.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 5,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 130946.8,
+        "p99_ms": 0.489,
+        "ok": 261933,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 148235.8,
+        "p99_ms": 0.423,
+        "ok": 296522,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 148517.6,
+        "p99_ms": 0.409,
+        "ok": 297071,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 154556.7,
+        "p99_ms": 0.398,
+        "ok": 309162,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.49 11.32 13.86 7/5242 891315",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 73192,
+    "rss_final_kib": 68784,
+    "cpu_seconds": 41.26,
+    "requests": 1164688,
+    "load_end": "8.00 11.07 13.74 11/5244 891657",
+    "server_log_bytes": 178447307,
+    "server_log_lines": 1613012,
+    "gc_cpu_ms": 2953.854000000003,
+    "gc_cycles": 2473,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.536,
+    "cpu_us_per_request": 35.426,
+    "log": "go100-5.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 5,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 132338.2,
+        "p99_ms": 0.486,
+        "ok": 264708,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 150484.3,
+        "p99_ms": 0.41,
+        "ok": 301030,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 147587.2,
+        "p99_ms": 0.419,
+        "ok": 295234,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 148460.5,
+        "p99_ms": 0.426,
+        "ok": 296964,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.00 11.07 13.74 3/5233 891658",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 68324,
+    "rss_final_kib": 67064,
+    "cpu_seconds": 41.22,
+    "requests": 1157936,
+    "load_end": "8.10 10.99 13.68 7/5254 892021",
+    "server_log_bytes": 176820319,
+    "server_log_lines": 1596540,
+    "gc_cpu_ms": 2943.470000000002,
+    "gc_cycles": 2474,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.542,
+    "cpu_us_per_request": 35.598,
+    "log": "gonull-5.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 5,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 135157.6,
+        "p99_ms": 0.428,
+        "ok": 270347,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 152131.5,
+        "p99_ms": 0.369,
+        "ok": 304302,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 144867.8,
+        "p99_ms": 0.404,
+        "ok": 289782,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 156690.1,
+        "p99_ms": 0.344,
+        "ok": 313438,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.10 10.99 13.68 5/5243 892021",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 79156,
+    "rss_final_kib": 77356,
+    "cpu_seconds": 41.13,
+    "requests": 1177869,
+    "load_end": "7.91 10.81 13.58 1/5251 893426",
+    "server_log_bytes": 178003932,
+    "server_log_lines": 1607982,
+    "gc_cpu_ms": 1579.3610000000015,
+    "gc_cycles": 1140,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.341,
+    "cpu_us_per_request": 34.919,
+    "log": "go200-5.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 5,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 142277.7,
+        "p99_ms": 0.395,
+        "ok": 284613,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 151472.4,
+        "p99_ms": 0.369,
+        "ok": 302986,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 154637.7,
+        "p99_ms": 0.362,
+        "ok": 309334,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 152837.3,
+        "p99_ms": 0.367,
+        "ok": 305725,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "7.91 10.81 13.58 14/5226 893427",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 79536,
+    "rss_final_kib": 78128,
+    "cpu_seconds": 41.16,
+    "requests": 1202658,
+    "load_end": "7.86 10.70 13.51 4/5295 894566",
+    "server_log_bytes": 183084979,
+    "server_log_lines": 1654512,
+    "gc_cpu_ms": 1591.2809999999986,
+    "gc_cycles": 1178,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.323,
+    "cpu_us_per_request": 34.224,
+    "log": "go200+256MiB-5.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 6,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 126978.8,
+        "p99_ms": 0.536,
+        "ok": 254002,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 147554.6,
+        "p99_ms": 0.423,
+        "ok": 295154,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 148745.1,
+        "p99_ms": 0.421,
+        "ok": 297540,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 153534.6,
+        "p99_ms": 0.397,
+        "ok": 307116,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "7.86 10.70 13.51 4/5296 894630",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 68688,
+    "rss_final_kib": 66516,
+    "cpu_seconds": 40.93,
+    "requests": 1153812,
+    "load_end": "7.77 10.54 13.41 2/5250 895384",
+    "server_log_bytes": 175214904,
+    "server_log_lines": 1583964,
+    "gc_cpu_ms": 2914.8510000000024,
+    "gc_cycles": 2436,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.526,
+    "cpu_us_per_request": 35.474,
+    "log": "gonull-6.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 6,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 136965.9,
+        "p99_ms": 0.43,
+        "ok": 273994,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 156606.2,
+        "p99_ms": 0.348,
+        "ok": 313267,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 158065.8,
+        "p99_ms": 0.346,
+        "ok": 316196,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 162378.7,
+        "p99_ms": 0.326,
+        "ok": 324801,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "7.77 10.54 13.41 6/5238 895389",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 79392,
+    "rss_final_kib": 78504,
+    "cpu_seconds": 41.22,
+    "requests": 1228258,
+    "load_end": "7.73 10.44 13.35 7/5247 896174",
+    "server_log_bytes": 185863013,
+    "server_log_lines": 1681154,
+    "gc_cpu_ms": 1571.9550000000004,
+    "gc_cycles": 1205,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.28,
+    "cpu_us_per_request": 33.56,
+    "log": "go200-6.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 6,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 143891.3,
+        "p99_ms": 0.384,
+        "ok": 287834,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 157770.2,
+        "p99_ms": 0.339,
+        "ok": 315605,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 151898.7,
+        "p99_ms": 0.372,
+        "ok": 303846,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 157760.1,
+        "p99_ms": 0.339,
+        "ok": 315567,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "7.73 10.44 13.35 4/5236 896176",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 81900,
+    "rss_final_kib": 78044,
+    "cpu_seconds": 41.22,
+    "requests": 1222852,
+    "load_end": "8.13 10.38 13.29 6/5332 896840",
+    "server_log_bytes": 186114705,
+    "server_log_lines": 1681704,
+    "gc_cpu_ms": 1534.6529999999996,
+    "gc_cycles": 1207,
+    "gc_share_percent": 2,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.255,
+    "cpu_us_per_request": 33.708,
+    "log": "go200+256MiB-6.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 6,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 117763.8,
+        "p99_ms": 0.663,
+        "ok": 235667,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 69697.9,
+        "p99_ms": 1.934,
+        "ok": 139417,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 68750.8,
+        "p99_ms": 2.035,
+        "ok": 137534,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 66671.8,
+        "p99_ms": 1.99,
+        "ok": 133372,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.13 10.38 13.29 7/5325 896880",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 77864,
+    "rss_final_kib": 68728,
+    "cpu_seconds": 27.44,
+    "requests": 645990,
+    "load_end": "9.25 10.55 13.31 4/5246 897667",
+    "server_log_bytes": 100250796,
+    "server_log_lines": 906284,
+    "gc_cpu_ms": 3607.743999999997,
+    "gc_cycles": 1365,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 5.585,
+    "cpu_us_per_request": 42.477,
+    "log": "go100-6.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 7,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 67899.3,
+        "p99_ms": 1.889,
+        "ok": 135818,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 156593.0,
+        "p99_ms": 0.345,
+        "ok": 313234,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 156013.0,
+        "p99_ms": 0.355,
+        "ok": 312079,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 157604.4,
+        "p99_ms": 0.337,
+        "ok": 315257,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.25 10.55 13.31 3/5233 897669",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 92664,
+    "rss_final_kib": 78936,
+    "cpu_seconds": 35.93,
+    "requests": 1076388,
+    "load_end": "9.11 10.46 13.23 6/4056 898552",
+    "server_log_bytes": 159901959,
+    "server_log_lines": 1445804,
+    "gc_cpu_ms": 1759.9959999999985,
+    "gc_cycles": 957,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.635,
+    "cpu_us_per_request": 33.38,
+    "log": "go200-7.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 7,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 139862.1,
+        "p99_ms": 0.404,
+        "ok": 279768,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 145362.5,
+        "p99_ms": 0.395,
+        "ok": 290774,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 133460.0,
+        "p99_ms": 0.473,
+        "ok": 266967,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 139261.4,
+        "p99_ms": 0.464,
+        "ok": 278574,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.11 10.46 13.23 3/4043 898553",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 86792,
+    "rss_final_kib": 76184,
+    "cpu_seconds": 39.88,
+    "requests": 1116083,
+    "load_end": "9.17 10.43 13.19 8/4034 900245",
+    "server_log_bytes": 169008855,
+    "server_log_lines": 1523538,
+    "gc_cpu_ms": 1647.8320000000015,
+    "gc_cycles": 1096,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.476,
+    "cpu_us_per_request": 35.732,
+    "log": "go200+256MiB-7.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 7,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 127053.3,
+        "p99_ms": 0.511,
+        "ok": 254143,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 146744.5,
+        "p99_ms": 0.423,
+        "ok": 293532,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 146321.0,
+        "p99_ms": 0.427,
+        "ok": 292689,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 152238.2,
+        "p99_ms": 0.402,
+        "ok": 304519,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.17 10.43 13.19 13/4023 900262",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 69876,
+    "rss_final_kib": 68852,
+    "cpu_seconds": 41.21,
+    "requests": 1144883,
+    "load_end": "8.83 10.29 13.10 2/4076 901785",
+    "server_log_bytes": 175308071,
+    "server_log_lines": 1584242,
+    "gc_cpu_ms": 2934.969999999998,
+    "gc_cycles": 2448,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.564,
+    "cpu_us_per_request": 35.995,
+    "log": "go100-7.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 7,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 130714.2,
+        "p99_ms": 0.489,
+        "ok": 261468,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 140459.9,
+        "p99_ms": 0.455,
+        "ok": 280963,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 138436.7,
+        "p99_ms": 0.469,
+        "ok": 276918,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 142651.3,
+        "p99_ms": 0.451,
+        "ok": 285350,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "8.83 10.29 13.10 3/4063 901785",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 72332,
+    "rss_final_kib": 69808,
+    "cpu_seconds": 41.13,
+    "requests": 1104699,
+    "load_end": "9.16 10.31 13.08 8/4144 904785",
+    "server_log_bytes": 169175123,
+    "server_log_lines": 1528417,
+    "gc_cpu_ms": 2964.9470000000038,
+    "gc_cycles": 2377,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.684,
+    "cpu_us_per_request": 37.232,
+    "log": "gonull-7.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 8,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 130678.2,
+        "p99_ms": 0.45,
+        "ok": 261397,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 140136.6,
+        "p99_ms": 0.4,
+        "ok": 280318,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 139942.5,
+        "p99_ms": 0.417,
+        "ok": 279937,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 134144.5,
+        "p99_ms": 0.428,
+        "ok": 268347,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.16 10.31 13.08 7/4146 904824",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 89456,
+    "rss_final_kib": 78296,
+    "cpu_seconds": 41.06,
+    "requests": 1089999,
+    "load_end": "10.18 10.48 13.09 11/4066 907122",
+    "server_log_bytes": 167236664,
+    "server_log_lines": 1510317,
+    "gc_cpu_ms": 1675.6189999999983,
+    "gc_cycles": 1072,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.537,
+    "cpu_us_per_request": 37.67,
+    "log": "go200+256MiB-8.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 8,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 85654.1,
+        "p99_ms": 1.381,
+        "ok": 171359,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 109342.9,
+        "p99_ms": 0.832,
+        "ok": 218729,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 131229.3,
+        "p99_ms": 0.512,
+        "ok": 262509,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 146161.3,
+        "p99_ms": 0.423,
+        "ok": 292383,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "10.18 10.48 13.09 9/4052 907140",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 72648,
+    "rss_final_kib": 68644,
+    "cpu_seconds": 38.35,
+    "requests": 944980,
+    "load_end": "12.97 11.08 13.26 6/4163 910786",
+    "server_log_bytes": 143605793,
+    "server_log_lines": 1304173,
+    "gc_cpu_ms": 2976.866999999998,
+    "gc_cycles": 1957,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 3.15,
+    "cpu_us_per_request": 40.583,
+    "log": "go100-8.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 8,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 128762.1,
+        "p99_ms": 0.501,
+        "ok": 257568,
+        "bytes": 20114
+      },
+      {
+        "route": "messages_page",
+        "rps": 148262.3,
+        "p99_ms": 0.417,
+        "ok": 296573,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 145484.2,
+        "p99_ms": 0.438,
+        "ok": 291019,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 146554.5,
+        "p99_ms": 0.433,
+        "ok": 293162,
+        "bytes": 9334
+      }
+    ],
+    "load_start": "12.97 11.08 13.26 10/4082 911075",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 72140,
+    "rss_final_kib": 71696,
+    "cpu_seconds": 41.06,
+    "requests": 1138322,
+    "load_end": "11.85 10.93 13.18 10/4222 912821",
+    "server_log_bytes": 173621915,
+    "server_log_lines": 1568035,
+    "gc_cpu_ms": 2894.5130000000013,
+    "gc_cycles": 2401,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.543,
+    "cpu_us_per_request": 36.071,
+    "log": "gonull-8.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 8,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 135099.6,
+        "p99_ms": 0.442,
+        "ok": 270239,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 149308.5,
+        "p99_ms": 0.368,
+        "ok": 298666,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 147854.7,
+        "p99_ms": 0.378,
+        "ok": 295762,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 153340.8,
+        "p99_ms": 0.356,
+        "ok": 306733,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "11.85 10.93 13.18 6/4221 912944",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 82304,
+    "rss_final_kib": 78476,
+    "cpu_seconds": 40.78,
+    "requests": 1171400,
+    "load_end": "11.72 10.94 13.15 5/4076 914461",
+    "server_log_bytes": 177310629,
+    "server_log_lines": 1602606,
+    "gc_cpu_ms": 1579.4329999999989,
+    "gc_cycles": 1141,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.348,
+    "cpu_us_per_request": 34.813,
+    "log": "go200-8.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 9,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 122972.5,
+        "p99_ms": 0.546,
+        "ok": 245979,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 148501.5,
+        "p99_ms": 0.407,
+        "ok": 297043,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 134190.2,
+        "p99_ms": 0.522,
+        "ok": 268426,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 149721.6,
+        "p99_ms": 0.405,
+        "ok": 299493,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "11.72 10.94 13.15 5/4061 914467",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 73076,
+    "rss_final_kib": 67440,
+    "cpu_seconds": 40.79,
+    "requests": 1110941,
+    "load_end": "10.82 10.77 13.06 4/4034 915967",
+    "server_log_bytes": 171296036,
+    "server_log_lines": 1547463,
+    "gc_cpu_ms": 2923.672999999995,
+    "gc_cycles": 2377,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.632,
+    "cpu_us_per_request": 36.717,
+    "log": "go100-9.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 9,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 129776.4,
+        "p99_ms": 0.515,
+        "ok": 259590,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 145540.9,
+        "p99_ms": 0.438,
+        "ok": 291123,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 144638.0,
+        "p99_ms": 0.431,
+        "ok": 289318,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 144884.5,
+        "p99_ms": 0.447,
+        "ok": 289818,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "10.82 10.77 13.06 2/4021 915968",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 70816,
+    "rss_final_kib": 66272,
+    "cpu_seconds": 40.84,
+    "requests": 1129849,
+    "load_end": "10.85 10.78 13.04 7/4044 917211",
+    "server_log_bytes": 172825675,
+    "server_log_lines": 1561052,
+    "gc_cpu_ms": 2937.189000000004,
+    "gc_cycles": 2406,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.6,
+    "cpu_us_per_request": 36.146,
+    "log": "gonull-9.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 9,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 133455.2,
+        "p99_ms": 0.452,
+        "ok": 266947,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 145939.8,
+        "p99_ms": 0.4,
+        "ok": 291953,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 138815.6,
+        "p99_ms": 0.422,
+        "ok": 277677,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 153291.6,
+        "p99_ms": 0.351,
+        "ok": 306639,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "10.85 10.78 13.04 5/4034 917221",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 87012,
+    "rss_final_kib": 77744,
+    "cpu_seconds": 40.58,
+    "requests": 1143216,
+    "load_end": "10.30 10.66 12.97 1/4026 926183",
+    "server_log_bytes": 170653258,
+    "server_log_lines": 1540227,
+    "gc_cpu_ms": 1631.122999999998,
+    "gc_cycles": 1090,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.427,
+    "cpu_us_per_request": 35.496,
+    "log": "go200-9.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 9,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 139489.8,
+        "p99_ms": 0.409,
+        "ok": 279032,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 155365.5,
+        "p99_ms": 0.353,
+        "ok": 310786,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 158221.7,
+        "p99_ms": 0.348,
+        "ok": 316512,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 161109.2,
+        "p99_ms": 0.328,
+        "ok": 322273,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "10.30 10.66 12.97 1/4015 926187",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 80604,
+    "rss_final_kib": 78684,
+    "cpu_seconds": 41.38,
+    "requests": 1228603,
+    "load_end": "9.87 10.56 12.91 1/4012 926777",
+    "server_log_bytes": 186932141,
+    "server_log_lines": 1689950,
+    "gc_cpu_ms": 1574.472999999997,
+    "gc_cycles": 1205,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.282,
+    "cpu_us_per_request": 33.681,
+    "log": "go200+256MiB-9.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 10,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 129863.9,
+        "p99_ms": 0.505,
+        "ok": 259773,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 146255.5,
+        "p99_ms": 0.432,
+        "ok": 292565,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 143920.0,
+        "p99_ms": 0.442,
+        "ok": 287889,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 150376.0,
+        "p99_ms": 0.412,
+        "ok": 300802,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.87 10.56 12.91 7/4008 926790",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 72748,
+    "rss_final_kib": 67428,
+    "cpu_seconds": 41.29,
+    "requests": 1141029,
+    "load_end": "9.63 10.47 12.84 2/4025 927925",
+    "server_log_bytes": 175157316,
+    "server_log_lines": 1582627,
+    "gc_cpu_ms": 2915.021000000004,
+    "gc_cycles": 2454,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.555,
+    "cpu_us_per_request": 36.187,
+    "log": "gonull-10.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 10,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 140134.0,
+        "p99_ms": 0.409,
+        "ok": 280312,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 151277.6,
+        "p99_ms": 0.36,
+        "ok": 302603,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 148327.2,
+        "p99_ms": 0.378,
+        "ok": 296711,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 147667.0,
+        "p99_ms": 0.378,
+        "ok": 295392,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.63 10.47 12.84 3/4015 927962",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 88068,
+    "rss_final_kib": 78804,
+    "cpu_seconds": 41.37,
+    "requests": 1175018,
+    "load_end": "9.47 10.40 12.79 6/4033 931273",
+    "server_log_bytes": 179630821,
+    "server_log_lines": 1621983,
+    "gc_cpu_ms": 1600.6680000000006,
+    "gc_cycles": 1162,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.362,
+    "cpu_us_per_request": 35.208,
+    "log": "go200-10.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 10,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 138068.3,
+        "p99_ms": 0.41,
+        "ok": 276183,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 154702.1,
+        "p99_ms": 0.352,
+        "ok": 309461,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 138637.7,
+        "p99_ms": 0.439,
+        "ok": 277321,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 105764.1,
+        "p99_ms": 0.408,
+        "ok": 211563,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.47 10.40 12.79 6/4034 931306",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 84596,
+    "rss_final_kib": 77864,
+    "cpu_seconds": 38.96,
+    "requests": 1074528,
+    "load_end": "9.29 10.32 12.72 10/4032 937097",
+    "server_log_bytes": 170052749,
+    "server_log_lines": 1529349,
+    "gc_cpu_ms": 1497.9859999999996,
+    "gc_cycles": 1098,
+    "gc_share_percent": 2,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.394,
+    "cpu_us_per_request": 36.258,
+    "log": "go200+256MiB-10.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 10,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 71292.1,
+        "p99_ms": 0.581,
+        "ok": 142607,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 127465.6,
+        "p99_ms": 0.467,
+        "ok": 254975,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 142118.2,
+        "p99_ms": 0.446,
+        "ok": 284282,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 137638.3,
+        "p99_ms": 0.48,
+        "ok": 275311,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.29 10.32 12.72 9/4031 937112",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 72324,
+    "rss_final_kib": 68152,
+    "cpu_seconds": 35.06,
+    "requests": 957175,
+    "load_end": "9.40 10.31 12.70 5/4067 939150",
+    "server_log_bytes": 143571873,
+    "server_log_lines": 1300278,
+    "gc_cpu_ms": 2549.1219999999994,
+    "gc_cycles": 1930,
+    "gc_share_percent": 4,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.663,
+    "cpu_us_per_request": 36.629,
+    "log": "go100-10.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 11,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 103246.6,
+        "p99_ms": 0.673,
+        "ok": 206526,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 126350.6,
+        "p99_ms": 0.528,
+        "ok": 252732,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 106691.7,
+        "p99_ms": 0.634,
+        "ok": 213457,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 116280.6,
+        "p99_ms": 0.744,
+        "ok": 232600,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "9.36 10.28 12.68 7/4037 939259",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 89068,
+    "rss_final_kib": 77444,
+    "cpu_seconds": 37.79,
+    "requests": 905315,
+    "load_end": "11.86 10.77 12.81 10/4102 943110",
+    "server_log_bytes": 132788856,
+    "server_log_lines": 1195200,
+    "gc_cpu_ms": 1721.723999999999,
+    "gc_cycles": 855,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 1.902,
+    "cpu_us_per_request": 41.742,
+    "log": "go200-11.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 11,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 106601.3,
+        "p99_ms": 0.685,
+        "ok": 213247,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 139017.8,
+        "p99_ms": 0.429,
+        "ok": 278088,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 85270.3,
+        "p99_ms": 1.716,
+        "ok": 170604,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 72818.1,
+        "p99_ms": 1.738,
+        "ok": 145656,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "11.86 10.77 12.81 9/4094 943145",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 90588,
+    "rss_final_kib": 88356,
+    "cpu_seconds": 32.51,
+    "requests": 807595,
+    "load_end": "12.69 10.98 12.85 5/4139 947080",
+    "server_log_bytes": 125096163,
+    "server_log_lines": 1118210,
+    "gc_cpu_ms": 1938.3359999999993,
+    "gc_cycles": 791,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 2.4,
+    "cpu_us_per_request": 40.255,
+    "log": "go200+256MiB-11.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 11,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 43856.9,
+        "p99_ms": 3.103,
+        "ok": 87740,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 44196.5,
+        "p99_ms": 2.003,
+        "ok": 106564,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 16121.4,
+        "p99_ms": 1.697,
+        "ok": 37874,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 72135.3,
+        "p99_ms": 1.318,
+        "ok": 144330,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "12.31 10.93 12.83 17/4132 947114",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 76952,
+    "rss_final_kib": 69020,
+    "cpu_seconds": 21.69,
+    "requests": 376508,
+    "load_end": "12.64 11.05 12.84 22/4163 950647",
+    "server_log_bytes": 60258476,
+    "server_log_lines": 548410,
+    "gc_cpu_ms": 3039.4999999999964,
+    "gc_cycles": 768,
+    "gc_share_percent": 4,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 8.073,
+    "cpu_us_per_request": 57.608,
+    "log": "go100-11.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 11,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 60271.0,
+        "p99_ms": 1.826,
+        "ok": 120577,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 69406.7,
+        "p99_ms": 1.577,
+        "ok": 138862,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 68431.7,
+        "p99_ms": 1.672,
+        "ok": 136899,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 73371.8,
+        "p99_ms": 1.315,
+        "ok": 146781,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "12.64 11.05 12.84 19/4156 950698",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 74888,
+    "rss_final_kib": 69148,
+    "cpu_seconds": 34.7,
+    "requests": 543119,
+    "load_end": "15.71 11.81 13.07 18/4132 956277",
+    "server_log_bytes": 81262286,
+    "server_log_lines": 734826,
+    "gc_cpu_ms": 3204.628,
+    "gc_cycles": 1105,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 5.9,
+    "cpu_us_per_request": 63.89,
+    "log": "gonull-11.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 12,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 75479.9,
+        "p99_ms": 1.079,
+        "ok": 151007,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 83244.8,
+        "p99_ms": 0.826,
+        "ok": 166523,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 79996.6,
+        "p99_ms": 1.213,
+        "ok": 160034,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 51030.1,
+        "p99_ms": 2.467,
+        "ok": 102112,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "15.71 11.81 13.07 18/4123 956319",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 89380,
+    "rss_final_kib": 87076,
+    "cpu_seconds": 34.98,
+    "requests": 579676,
+    "load_end": "16.90 12.20 13.18 21/4148 960361",
+    "server_log_bytes": 88299973,
+    "server_log_lines": 792699,
+    "gc_cpu_ms": 1805.4200000000003,
+    "gc_cycles": 564,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 3.115,
+    "cpu_us_per_request": 60.344,
+    "log": "go200+256MiB-12.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 12,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 41001.3,
+        "p99_ms": 3.161,
+        "ok": 82024,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 42700.7,
+        "p99_ms": 2.891,
+        "ok": 85448,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 50523.7,
+        "p99_ms": 2.863,
+        "ok": 101086,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 41880.7,
+        "p99_ms": 2.603,
+        "ok": 83784,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.90 12.20 13.18 24/4154 960433",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 75260,
+    "rss_final_kib": 67944,
+    "cpu_seconds": 20.66,
+    "requests": 352342,
+    "load_end": "19.60 13.03 13.44 18/4124 964521",
+    "server_log_bytes": 51913618,
+    "server_log_lines": 468719,
+    "gc_cpu_ms": 4036.0520000000015,
+    "gc_cycles": 656,
+    "gc_share_percent": 6,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 11.455,
+    "cpu_us_per_request": 58.636,
+    "log": "go100-12.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 12,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 78516.3,
+        "p99_ms": 1.161,
+        "ok": 157073,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 77916.7,
+        "p99_ms": 0.943,
+        "ok": 155865,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 85036.4,
+        "p99_ms": 0.851,
+        "ok": 170106,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 83144.7,
+        "p99_ms": 0.921,
+        "ok": 166357,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "19.60 13.03 13.44 20/4112 964637",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 71640,
+    "rss_final_kib": 67120,
+    "cpu_seconds": 39.09,
+    "requests": 649401,
+    "load_end": "19.90 13.31 13.52 20/4116 968573",
+    "server_log_bytes": 96027290,
+    "server_log_lines": 868382,
+    "gc_cpu_ms": 3292.926999999998,
+    "gc_cycles": 1318,
+    "gc_share_percent": 6,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 5.071,
+    "cpu_us_per_request": 60.194,
+    "log": "gonull-12.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 12,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 77373.9,
+        "p99_ms": 0.966,
+        "ok": 154803,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 89894.1,
+        "p99_ms": 0.698,
+        "ok": 179814,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 97816.8,
+        "p99_ms": 0.686,
+        "ok": 195671,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 97722.7,
+        "p99_ms": 0.806,
+        "ok": 195482,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "19.90 13.31 13.52 24/4108 968620",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 89324,
+    "rss_final_kib": 78924,
+    "cpu_seconds": 38.71,
+    "requests": 725770,
+    "load_end": "20.37 13.75 13.67 16/4096 970660",
+    "server_log_bytes": 107289391,
+    "server_log_lines": 971058,
+    "gc_cpu_ms": 1850.518999999999,
+    "gc_cycles": 677,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.55,
+    "cpu_us_per_request": 53.336,
+    "log": "go200-12.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 13,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 82755.2,
+        "p99_ms": 1.076,
+        "ok": 165534,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 125483.0,
+        "p99_ms": 0.611,
+        "ok": 251020,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 121422.2,
+        "p99_ms": 0.65,
+        "ok": 242886,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 151789.5,
+        "p99_ms": 0.412,
+        "ok": 303624,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "20.37 13.75 13.67 14/4082 970692",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 75492,
+    "rss_final_kib": 68628,
+    "cpu_seconds": 38.11,
+    "requests": 963064,
+    "load_end": "19.45 13.78 13.68 6/4062 971855",
+    "server_log_bytes": 140123323,
+    "server_log_lines": 1272391,
+    "gc_cpu_ms": 3078.809999999995,
+    "gc_cycles": 1857,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 3.197,
+    "cpu_us_per_request": 39.572,
+    "log": "go100-13.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 13,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 71157.0,
+        "p99_ms": 1.843,
+        "ok": 142344,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 47988.2,
+        "p99_ms": 0.443,
+        "ok": 121538,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 85322.5,
+        "p99_ms": 1.765,
+        "ok": 170672,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 87148.7,
+        "p99_ms": 1.634,
+        "ok": 174329,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "19.45 13.78 13.68 5/4049 971855",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 76312,
+    "rss_final_kib": 65780,
+    "cpu_seconds": 26.07,
+    "requests": 608883,
+    "load_end": "18.64 13.87 13.71 4/4075 972799",
+    "server_log_bytes": 98879113,
+    "server_log_lines": 896753,
+    "gc_cpu_ms": 2965.7890000000007,
+    "gc_cycles": 1323,
+    "gc_share_percent": 4,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 4.871,
+    "cpu_us_per_request": 42.816,
+    "log": "gonull-13.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 13,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 75499.0,
+        "p99_ms": 1.721,
+        "ok": 151073,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 90085.6,
+        "p99_ms": 1.49,
+        "ok": 180206,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 96367.7,
+        "p99_ms": 0.487,
+        "ok": 230507,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 153243.8,
+        "p99_ms": 0.351,
+        "ok": 306546,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "18.64 13.87 13.71 5/4062 972801",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 94288,
+    "rss_final_kib": 80832,
+    "cpu_seconds": 31.03,
+    "requests": 868332,
+    "load_end": "17.84 13.86 13.71 3/4046 973633",
+    "server_log_bytes": 122604348,
+    "server_log_lines": 1112270,
+    "gc_cpu_ms": 1767.029999999996,
+    "gc_cycles": 738,
+    "gc_share_percent": 2,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.035,
+    "cpu_us_per_request": 35.735,
+    "log": "go200-13.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 13,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 140455.9,
+        "p99_ms": 0.407,
+        "ok": 280953,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 156325.0,
+        "p99_ms": 0.343,
+        "ok": 312694,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 145880.9,
+        "p99_ms": 0.39,
+        "ok": 291815,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 135851.1,
+        "p99_ms": 0.559,
+        "ok": 271748,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "17.84 13.86 13.71 6/4033 973642",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 88952,
+    "rss_final_kib": 87520,
+    "cpu_seconds": 40.83,
+    "requests": 1157210,
+    "load_end": "16.79 13.80 13.69 17/4216 974949",
+    "server_log_bytes": 178431083,
+    "server_log_lines": 1608806,
+    "gc_cpu_ms": 1617.307999999999,
+    "gc_cycles": 1148,
+    "gc_share_percent": 2,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.398,
+    "cpu_us_per_request": 35.283,
+    "log": "go200+256MiB-13.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 14,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 59866.3,
+        "p99_ms": 2.175,
+        "ok": 119755,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 65126.7,
+        "p99_ms": 2.028,
+        "ok": 130294,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 68190.3,
+        "p99_ms": 2.113,
+        "ok": 136406,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 55459.0,
+        "p99_ms": 2.365,
+        "ok": 110937,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.79 13.80 13.69 6/4206 974982",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 76228,
+    "rss_final_kib": 76676,
+    "cpu_seconds": 22.41,
+    "requests": 497392,
+    "load_end": "16.41 13.86 13.71 14/4203 975432",
+    "server_log_bytes": 77227389,
+    "server_log_lines": 695629,
+    "gc_cpu_ms": 3785.657999999997,
+    "gc_cycles": 909,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 7.611,
+    "cpu_us_per_request": 45.055,
+    "log": "gonull-14.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 14,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 56070.9,
+        "p99_ms": 2.181,
+        "ok": 112187,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 63755.1,
+        "p99_ms": 2.02,
+        "ok": 127546,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 70981.4,
+        "p99_ms": 1.957,
+        "ok": 141988,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 67487.7,
+        "p99_ms": 1.904,
+        "ok": 135019,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.41 13.86 13.71 17/4179 975433",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 93564,
+    "rss_final_kib": 79196,
+    "cpu_seconds": 22.57,
+    "requests": 516740,
+    "load_end": "16.88 14.05 13.77 12/4178 975912",
+    "server_log_bytes": 78932423,
+    "server_log_lines": 713150,
+    "gc_cpu_ms": 2257.239000000002,
+    "gc_cycles": 471,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 4.368,
+    "cpu_us_per_request": 43.678,
+    "log": "go200-14.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 14,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 67924.1,
+        "p99_ms": 1.542,
+        "ok": 135868,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 64921.1,
+        "p99_ms": 1.936,
+        "ok": 129894,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 71306.5,
+        "p99_ms": 1.934,
+        "ok": 142644,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 65579.6,
+        "p99_ms": 1.97,
+        "ok": 131182,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.88 14.05 13.77 37/4164 975912",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 90632,
+    "rss_final_kib": 80412,
+    "cpu_seconds": 23.35,
+    "requests": 539588,
+    "load_end": "17.75 14.40 13.89 11/4141 976792",
+    "server_log_bytes": 80942163,
+    "server_log_lines": 730077,
+    "gc_cpu_ms": 2023.4810000000002,
+    "gc_cycles": 480,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 3.75,
+    "cpu_us_per_request": 43.274,
+    "log": "go200+256MiB-14.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 14,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 56866.4,
+        "p99_ms": 2.461,
+        "ok": 113755,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 57915.8,
+        "p99_ms": 2.447,
+        "ok": 115859,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 60945.6,
+        "p99_ms": 2.275,
+        "ok": 121944,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 55061.9,
+        "p99_ms": 2.441,
+        "ok": 110158,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "17.75 14.40 13.89 11/4129 976795",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 77956,
+    "rss_final_kib": 70964,
+    "cpu_seconds": 22.13,
+    "requests": 461716,
+    "load_end": "17.49 14.45 13.92 11/4160 977329",
+    "server_log_bytes": 70733147,
+    "server_log_lines": 638268,
+    "gc_cpu_ms": 3957.712999999998,
+    "gc_cycles": 844,
+    "gc_share_percent": 6,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 8.572,
+    "cpu_us_per_request": 47.93,
+    "log": "go100-14.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 15,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 58096.0,
+        "p99_ms": 2.269,
+        "ok": 116227,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 72149.6,
+        "p99_ms": 1.872,
+        "ok": 144358,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 81103.0,
+        "p99_ms": 1.771,
+        "ok": 162259,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 76376.5,
+        "p99_ms": 1.73,
+        "ok": 152778,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "17.49 14.45 13.92 28/4146 977331",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 91968,
+    "rss_final_kib": 77328,
+    "cpu_seconds": 23.31,
+    "requests": 575622,
+    "load_end": "16.82 14.46 13.93 8/4126 977761",
+    "server_log_bytes": 85237350,
+    "server_log_lines": 770350,
+    "gc_cpu_ms": 2189.366,
+    "gc_cycles": 494,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 3.803,
+    "cpu_us_per_request": 40.495,
+    "log": "go200-15.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 15,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 66546.1,
+        "p99_ms": 1.921,
+        "ok": 133111,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 106554.8,
+        "p99_ms": 1.144,
+        "ok": 213148,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 154065.4,
+        "p99_ms": 0.365,
+        "ok": 308184,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 145318.4,
+        "p99_ms": 0.41,
+        "ok": 290681,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.82 14.46 13.93 8/4112 977761",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 89556,
+    "rss_final_kib": 79900,
+    "cpu_seconds": 33.11,
+    "requests": 945124,
+    "load_end": "17.87 14.78 14.04 7/4121 978414",
+    "server_log_bytes": 139763012,
+    "server_log_lines": 1271178,
+    "gc_cpu_ms": 1896.2889999999973,
+    "gc_cycles": 851,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 2.006,
+    "cpu_us_per_request": 35.032,
+    "log": "go200+256MiB-15.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 15,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 119735.9,
+        "p99_ms": 0.576,
+        "ok": 239502,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 128405.5,
+        "p99_ms": 0.574,
+        "ok": 256854,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 146437.8,
+        "p99_ms": 0.428,
+        "ok": 292929,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 151580.5,
+        "p99_ms": 0.415,
+        "ok": 303210,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "17.87 14.78 14.04 6/4108 978421",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 70052,
+    "rss_final_kib": 67356,
+    "cpu_seconds": 39.71,
+    "requests": 1092495,
+    "load_end": "16.49 14.62 14.00 3/4104 979392",
+    "server_log_bytes": 164247736,
+    "server_log_lines": 1488847,
+    "gc_cpu_ms": 2916.513000000003,
+    "gc_cycles": 2238,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.67,
+    "cpu_us_per_request": 36.348,
+    "log": "go100-15.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 15,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 131283.2,
+        "p99_ms": 0.493,
+        "ok": 262607,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 144119.6,
+        "p99_ms": 0.451,
+        "ok": 288290,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 139115.4,
+        "p99_ms": 0.456,
+        "ok": 278287,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 147762.2,
+        "p99_ms": 0.418,
+        "ok": 295579,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.49 14.62 14.00 2/4090 979603",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 70492,
+    "rss_final_kib": 66416,
+    "cpu_seconds": 41.03,
+    "requests": 1124763,
+    "load_end": "16.09 14.60 14.00 7/4122 980009",
+    "server_log_bytes": 171785848,
+    "server_log_lines": 1551977,
+    "gc_cpu_ms": 2963.3939999999925,
+    "gc_cycles": 2401,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 2.635,
+    "cpu_us_per_request": 36.479,
+    "log": "gonull-15.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 16,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 136154.3,
+        "p99_ms": 0.421,
+        "ok": 272354,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 149222.8,
+        "p99_ms": 0.37,
+        "ok": 298494,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 127298.6,
+        "p99_ms": 0.484,
+        "ok": 254650,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 136544.5,
+        "p99_ms": 0.445,
+        "ok": 273135,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.09 14.60 14.00 9/4110 980018",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 91012,
+    "rss_final_kib": 77132,
+    "cpu_seconds": 40.4,
+    "requests": 1098633,
+    "load_end": "15.17 14.47 13.97 7/4195 980464",
+    "server_log_bytes": 164768955,
+    "server_log_lines": 1484265,
+    "gc_cpu_ms": 1660.8679999999965,
+    "gc_cycles": 1064,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 1.512,
+    "cpu_us_per_request": 36.773,
+    "log": "go200+256MiB-16.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 16,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 120486.2,
+        "p99_ms": 0.568,
+        "ok": 241014,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 62606.0,
+        "p99_ms": 2.103,
+        "ok": 125232,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 61142.7,
+        "p99_ms": 2.247,
+        "ok": 122307,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 61116.5,
+        "p99_ms": 2.127,
+        "ok": 122260,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "15.17 14.47 13.97 13/4181 980466",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 78172,
+    "rss_final_kib": 71892,
+    "cpu_seconds": 28.47,
+    "requests": 610813,
+    "load_end": "15.17 14.49 13.98 14/4227 981084",
+    "server_log_bytes": 99503569,
+    "server_log_lines": 895532,
+    "gc_cpu_ms": 3649.685999999999,
+    "gc_cycles": 1383,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 5.975,
+    "cpu_us_per_request": 46.61,
+    "log": "go100-16.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 16,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 45969.2,
+        "p99_ms": 2.895,
+        "ok": 91959,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 60476.0,
+        "p99_ms": 2.101,
+        "ok": 121096,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 61890.9,
+        "p99_ms": 2.249,
+        "ok": 123858,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 59151.4,
+        "p99_ms": 2.203,
+        "ok": 118346,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "15.17 14.49 13.98 17/4207 981096",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 76596,
+    "rss_final_kib": 64512,
+    "cpu_seconds": 22.67,
+    "requests": 455259,
+    "load_end": "15.97 14.70 14.05 12/4270 981557",
+    "server_log_bytes": 68406758,
+    "server_log_lines": 617832,
+    "gc_cpu_ms": 3955.256000000002,
+    "gc_cycles": 813,
+    "gc_share_percent": 6,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 8.688,
+    "cpu_us_per_request": 49.796,
+    "log": "gonull-16.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 16,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 62570.3,
+        "p99_ms": 2.049,
+        "ok": 125168,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 65311.1,
+        "p99_ms": 1.98,
+        "ok": 130670,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 60829.3,
+        "p99_ms": 2.193,
+        "ok": 121808,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 53266.6,
+        "p99_ms": 2.521,
+        "ok": 106553,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "15.97 14.70 14.05 11/4256 981558",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 91320,
+    "rss_final_kib": 78904,
+    "cpu_seconds": 22.93,
+    "requests": 484199,
+    "load_end": "17.13 14.99 14.16 16/4254 982344",
+    "server_log_bytes": 74350613,
+    "server_log_lines": 668978,
+    "gc_cpu_ms": 2190.687000000001,
+    "gc_cycles": 444,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 4.524,
+    "cpu_us_per_request": 47.357,
+    "log": "go200-16.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 17,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 43622.8,
+        "p99_ms": 3.401,
+        "ok": 87273,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 43013.2,
+        "p99_ms": 3.161,
+        "ok": 86041,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 63139.9,
+        "p99_ms": 2.149,
+        "ok": 126387,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 61890.9,
+        "p99_ms": 2.159,
+        "ok": 123805,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "17.13 14.99 14.16 14/4239 982349",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 75604,
+    "rss_final_kib": 73552,
+    "cpu_seconds": 21.14,
+    "requests": 423506,
+    "load_end": "16.46 14.95 14.16 10/4242 982763",
+    "server_log_bytes": 62649551,
+    "server_log_lines": 568312,
+    "gc_cpu_ms": 4242.632999999999,
+    "gc_cycles": 750,
+    "gc_share_percent": 6,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 10.018,
+    "cpu_us_per_request": 49.917,
+    "log": "go100-17.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 17,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 56615.8,
+        "p99_ms": 2.353,
+        "ok": 113263,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 57961.2,
+        "p99_ms": 2.325,
+        "ok": 115946,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 80722.5,
+        "p99_ms": 1.857,
+        "ok": 161479,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 67297.8,
+        "p99_ms": 1.954,
+        "ok": 134616,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.46 14.95 14.16 9/4229 982763",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 75876,
+    "rss_final_kib": 71996,
+    "cpu_seconds": 23.79,
+    "requests": 525304,
+    "load_end": "16.22 14.95 14.17 8/4245 991142",
+    "server_log_bytes": 80586791,
+    "server_log_lines": 728942,
+    "gc_cpu_ms": 3845.268000000001,
+    "gc_cycles": 978,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 7.32,
+    "cpu_us_per_request": 45.288,
+    "log": "gonull-17.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 17,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 65838.7,
+        "p99_ms": 1.986,
+        "ok": 131780,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 78259.5,
+        "p99_ms": 1.72,
+        "ok": 156547,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 76783.1,
+        "p99_ms": 1.842,
+        "ok": 153608,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 95355.4,
+        "p99_ms": 1.398,
+        "ok": 190758,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "16.22 14.95 14.17 8/4246 991160",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 91992,
+    "rss_final_kib": 80784,
+    "cpu_seconds": 24.6,
+    "requests": 632693,
+    "load_end": "15.58 14.87 14.15 8/4241 991639",
+    "server_log_bytes": 94748263,
+    "server_log_lines": 859420,
+    "gc_cpu_ms": 2294.93,
+    "gc_cycles": 551,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 3.627,
+    "cpu_us_per_request": 38.881,
+    "log": "go200-17.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 17,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 79518.2,
+        "p99_ms": 1.649,
+        "ok": 159090,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 79779.1,
+        "p99_ms": 1.638,
+        "ok": 159634,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 82327.6,
+        "p99_ms": 1.82,
+        "ok": 164696,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 87675.8,
+        "p99_ms": 1.54,
+        "ok": 175386,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "15.58 14.87 14.15 10/4226 991639",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 90276,
+    "rss_final_kib": 80884,
+    "cpu_seconds": 25.37,
+    "requests": 658806,
+    "load_end": "15.27 14.83 14.15 4/4230 992024",
+    "server_log_bytes": 98586444,
+    "server_log_lines": 891031,
+    "gc_cpu_ms": 2117.668999999999,
+    "gc_cycles": 598,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 3.214,
+    "cpu_us_per_request": 38.509,
+    "log": "go200+256MiB-17.log"
+  },
+  {
+    "app": "go",
+    "label": "null",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 18,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 60591.6,
+        "p99_ms": 2.135,
+        "ok": 121208,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 64558.6,
+        "p99_ms": 2.057,
+        "ok": 129169,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 70148.6,
+        "p99_ms": 2.049,
+        "ok": 140341,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 79006.4,
+        "p99_ms": 1.757,
+        "ok": 158034,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "15.27 14.83 14.15 9/4217 992024",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 77120,
+    "rss_final_kib": 66872,
+    "cpu_seconds": 23.1,
+    "requests": 548752,
+    "load_end": "14.16 14.61 14.09 6/4227 992398",
+    "server_log_bytes": 82381160,
+    "server_log_lines": 746114,
+    "gc_cpu_ms": 3862.057,
+    "gc_cycles": 987,
+    "gc_share_percent": 5,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 7.038,
+    "cpu_us_per_request": 42.096,
+    "log": "gonull-18.log"
+  },
+  {
+    "app": "go",
+    "label": "200",
+    "googc": 200,
+    "gomemlimit": null,
+    "rep": 18,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 74899.7,
+        "p99_ms": 1.771,
+        "ok": 149830,
+        "bytes": 20115
+      },
+      {
+        "route": "messages_page",
+        "rps": 73982.1,
+        "p99_ms": 1.732,
+        "ok": 148030,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 75307.7,
+        "p99_ms": 1.734,
+        "ok": 150643,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 56889.4,
+        "p99_ms": 1.656,
+        "ok": 113823,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "14.16 14.61 14.09 6/4221 992427",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 89740,
+    "rss_final_kib": 78688,
+    "cpu_seconds": 22.32,
+    "requests": 562326,
+    "load_end": "13.99 14.56 14.07 18/4259 992825",
+    "server_log_bytes": 84407822,
+    "server_log_lines": 761345,
+    "gc_cpu_ms": 1952.7019999999993,
+    "gc_cycles": 503,
+    "gc_share_percent": 3,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 3.473,
+    "cpu_us_per_request": 39.692,
+    "log": "go200-18.log"
+  },
+  {
+    "app": "go",
+    "label": "200+256MiB",
+    "googc": 200,
+    "gomemlimit": "256MiB",
+    "rep": 18,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 121306.2,
+        "p99_ms": 0.553,
+        "ok": 242659,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 89287.7,
+        "p99_ms": 1.01,
+        "ok": 190481,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 19120.1,
+        "p99_ms": 0.763,
+        "ok": 38299,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 6500.7,
+        "p99_ms": 1.452,
+        "ok": 19812,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "13.99 14.56 14.07 10/4242 992837",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 83444,
+    "rss_final_kib": 80636,
+    "cpu_seconds": 21.65,
+    "requests": 491251,
+    "load_end": "17.10 15.16 14.28 13/4306 993741",
+    "server_log_bytes": 82008296,
+    "server_log_lines": 723326,
+    "gc_cpu_ms": 1035.2760000000007,
+    "gc_cycles": 561,
+    "gc_share_percent": 1,
+    "effective_gc_percent": 200,
+    "effective_mem_limit": 268435456,
+    "gc_cpu_per_request_us": 2.107,
+    "cpu_us_per_request": 44.071,
+    "log": "go200+256MiB-18.log"
+  },
+  {
+    "app": "go",
+    "label": "100",
+    "googc": 100,
+    "gomemlimit": null,
+    "rep": 18,
+    "routes": [
+      {
+        "route": "room_show",
+        "rps": 16224.2,
+        "p99_ms": 0.777,
+        "ok": 38703,
+        "bytes": 20116
+      },
+      {
+        "route": "messages_page",
+        "rps": 2092.6,
+        "p99_ms": 525.823,
+        "ok": 4210,
+        "bytes": 10876
+      },
+      {
+        "route": "sidebar",
+        "rps": 30338.2,
+        "p99_ms": 0.482,
+        "ok": 60692,
+        "bytes": 5813
+      },
+      {
+        "route": "search",
+        "rps": 70113.3,
+        "p99_ms": 1.944,
+        "ok": 140248,
+        "bytes": 9335
+      }
+    ],
+    "load_start": "17.10 15.16 14.28 18/4297 993763",
+    "body_sha256": {
+      "room_show": "228f0e38a56872b3da2a9dd1e6cb54586116511b9244bb1f6a88505184ed88d8",
+      "messages_page": "fb9aa5e156ef7a752d1439dfbcb114de4c010f40d70383898ba2b90f75e6043a",
+      "sidebar": "b15d3f78c525a7ab6028575c86ccaa4737db2e1ff3a8a8eaad80b3c05c263d6b",
+      "search": "1c0d98b6b4e2b1b88a75775f8b0872d871e9060aa922160f6d9a8fca65bae271"
+    },
+    "rss_peak_kib": 73608,
+    "rss_final_kib": 67360,
+    "cpu_seconds": 10.48,
+    "requests": 243853,
+    "load_end": "21.88 16.50 14.74 5/4253 995196",
+    "server_log_bytes": 38036641,
+    "server_log_lines": 359400,
+    "gc_cpu_ms": 1075.5969999999998,
+    "gc_cycles": 498,
+    "gc_share_percent": 1,
+    "effective_gc_percent": 100,
+    "effective_mem_limit": 9223372036854775807,
+    "gc_cpu_per_request_us": 4.411,
+    "cpu_us_per_request": 42.977,
+    "log": "go100-18.log"
+  }
+]

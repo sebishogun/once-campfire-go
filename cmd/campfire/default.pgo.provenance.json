@@ -1,0 +1,59 @@
+{
+  "profile": "default.pgo",
+  "bytes": 139765,
+  "sha256": "4f5b64dd0c574f51abaab4e124b2f6390b042bccfc2b88aa12d1529b7a692d4e",
+  "collected_at": "2026-10-14T14:38:47Z",
+  "go_commit": "36bee91926258b819955a419fba3d7546b39e6c8",
+  "go_dirty": true,
+  "binary_sha256": "c37c9c490497ff7a631e3457d184149789e753e81775d0f6c207c28ea3953926",
+  "go_version": "go version go1.27.1 linux/amd64",
+  "seed": "/home/sebishogun/Work/Development/once-campfire-verification/fixtures/default",
+  "seed_sha256": "f57590582bf110d986e7780da1c47b6e3c6eebcbfff0a14a167010fe9d1e982d",
+  "loadgen_sha256": "3951d6712e9b00126400bfb0a3e8afd641f330cff87e0f84a7b031fcfcc6f893",
+  "routes": {
+    "room_show": {
+      "rps": 96769.9,
+      "p99_ms": 1.215,
+      "ok": 387111,
+      "bytes": 20116
+    },
+    "messages_page": {
+      "rps": 94806.1,
+      "p99_ms": 1.32,
+      "ok": 379322,
+      "bytes": 10876
+    },
+    "sidebar": {
+      "rps": 129999.2,
+      "p99_ms": 0.473,
+      "ok": 520045,
+      "bytes": 5813
+    },
+    "search": {
+      "rps": 96606.8,
+      "p99_ms": 1.301,
+      "ok": 386457,
+      "bytes": 9335
+    },
+    "post_message": {
+      "rps": 6198.5,
+      "p99_ms": 7.883,
+      "ok": 24810,
+      "bytes": 1925
+    }
+  },
+  "timed_seconds": 4.0,
+  "warmup_seconds": 2.0,
+  "concurrency": 16,
+  "warmup_concurrency": 4,
+  "gzip": true,
+  "listener": "public front (HTTP_PORT)",
+  "gomaxprocs": 4,
+  "campfire_gogc": 200,
+  "server_cpus": "8-11",
+  "loadgen_cpus": "12-15",
+  "load_start": "13.67 14.91 14.34 9/4206 1001091",
+  "host": "Linux 7.2.5-4-omarchy",
+  "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+  "command": "bin/pgo-profile --gogc 200"
+}

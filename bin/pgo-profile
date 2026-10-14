@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Collect the build's PGO profile (cmd/campfire/default.pgo) from the production workload.
+
+`go build` reads `default.pgo` from the main package directory when `-pgo=auto` is in effect
+(the default), so the committed profile in `cmd/campfire/` is the build's PGO input and the
+build silently falls back to no PGO when the file is absent.
+
+What this script does, so the profile can be reproduced from a revision:
+
+  1. Starts the built binary natively (`./campfire server`) on a disposable SQLite backup of a
+     reference seed, with the production composition: the public front listener on HTTP_PORT
+     (compression, response cache, the front chain), DISABLE_SSL, GOMAXPROCS=4 and the server
+     pinned to four CPUs, exactly as the shared harness runs the Go app.
+  2. Sets GO_CPU_PROFILE to the output path, so `cmd/campfire/main.go` records a pprof CPU
+     profile for the whole serving lifetime.
+  3. Drives the five harness routes — room_show, messages_page, sidebar, search and
+     post_message — with the shared load generator, a two-second warmup at concurrency 4 and a
+     timed sample at concurrency 16, all against the front listener, gzip requested.
+  4. Sends SIGINT; `front.Serve` returns, the deferred `pprof.StopCPUProfile` flushes the
+     profile, and the process exits.
+
+The provenance of a collected profile (revision, seed, load generator, routes, timings, host
+load) is written next to it as `<out>.provenance.json`; commit both. Re-running on a quiet host
+is expected to reproduce the hot-path ranking, not the byte-for-byte file.
+"""
+import argparse, importlib.machinery, importlib.util, json, os, shutil, sqlite3, subprocess, sys, tempfile, time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+loader = importlib.machinery.SourceFileLoader('pgo_health', str(ROOT / 'bench/health'))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+helper = importlib.util.module_from_spec(spec)
+loader.exec_module(helper)
+
+FIVE_ROUTES = ('room_show', 'messages_page', 'sidebar', 'search', 'post_message')
+
+
+def default_seed():
+    for candidate in (ROOT.parent / 'once-campfire-verification' / 'fixtures' / 'default',
+                      ROOT.parent / 'once-campfire-rust' / 'parity' / '.seed' / 'default'):
+        if (candidate / 'db' / 'production.sqlite3').is_file():
+            return candidate
+    raise SystemExit('no reference seed found; pass --seed')
+
+
+def default_loadgen():
+    for candidate in (ROOT.parent / 'once-campfire-verification' / 'loadgen' / 'target' / 'release' / 'loadgen',
+                      ROOT.parent / 'once-campfire-rust' / 'target' / 'bench' / 'release' / 'loadgen'):
+        if candidate.is_file():
+            return candidate
+    raise SystemExit('no load generator found; pass --loadgen')
+
+
+def seed_env(seed):
+    """The seed's fixed reference environment, as the harness applies it."""
+    for candidate in (seed / 'reference.env', seed.parent / 'reference.env'):
+        if not candidate.is_file():
+            continue
+        env = {}
+        for line in candidate.read_text().splitlines():
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                env[key] = value
+        return env
+    raise SystemExit(f'no reference.env under {seed}')
+
+
+def digest(path):
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def text(*args):
+    return subprocess.check_output(args, text=True).strip()
+
+
+def wait_ready(base, proc, log, timeout=30):
+    deadline = time.monotonic() + timeout
+    import urllib.request, urllib.error
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f'server exited before readiness:\n{log.read_text()}')
+        try:
+            with urllib.request.urlopen(base + '/up', timeout=1) as response:
+                if response.status == 200 and response.read() == helper.EXPECTED:
+                    return
+        except (OSError, urllib.error.HTTPError):
+            pass
+        time.sleep(0.05)
+    raise RuntimeError('server startup timeout')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--binary', type=Path, default=ROOT / 'campfire')
+    parser.add_argument('--seed', type=Path, default=None)
+    parser.add_argument('--loadgen', type=Path, default=None)
+    parser.add_argument('--out', type=Path, default=ROOT / 'cmd/campfire/default.pgo')
+    parser.add_argument('--seconds', type=float, default=4.0, help='timed seconds per route (default 4)')
+    parser.add_argument('--warmup', type=float, default=2.0, help='warmup seconds per route (default 2)')
+    parser.add_argument('--concurrency', type=int, default=16)
+    parser.add_argument('--warmup-concurrency', type=int, default=4)
+    parser.add_argument('--server-cpus', default='8-11')
+    parser.add_argument('--loadgen-cpus', default='12-15')
+    parser.add_argument('--gmp', type=int, default=4, help='GOMAXPROCS for the server (default 4)')
+    parser.add_argument('--gogc', type=int, default=None, help='CAMPFIRE_GOGC for the profiled server (the shipped default)')
+    parser.add_argument('--no-taskset', action='store_true', help='run without CPU pinning')
+    args = parser.parse_args()
+
+    binary = args.binary.resolve()
+    seed = (args.seed or default_seed()).resolve()
+    loadgen = (args.loadgen or default_loadgen()).resolve()
+    out = args.out.resolve()
+    if not binary.is_file():
+        raise SystemExit(f'no binary at {binary}; run bin/build first')
+    if not loadgen.is_file():
+        raise SystemExit(f'no load generator at {loadgen}')
+
+    labels = json.loads((seed / 'labels.json').read_text())
+    room = labels['rooms.watercooler']
+    write_room = labels['rooms.hq']
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('CAMPFIRE_', 'THRUSTER_')) and k != 'TLS_DOMAIN'}
+    env.update(seed_env(seed))
+    env.update(DISABLE_SSL='true', TARGET_BIND='127.0.0.1', GOMAXPROCS=str(args.gmp),
+               TMPDIR=str(ROOT / '.cache/tmp'))
+    if args.gogc is not None:
+        env['CAMPFIRE_GOGC'] = str(args.gogc)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    pinned = (lambda cpus, *command: list(command)) if args.no_taskset else \
+             (lambda cpus, *command: ['taskset', '-c', cpus, *command])
+
+    with tempfile.TemporaryDirectory(dir=ROOT / '.cache/tmp', prefix='pgo-') as tmp:
+        work = Path(tmp)
+        db = work / 'production.sqlite3'
+        with sqlite3.connect(f'file:{seed}/db/production.sqlite3?mode=ro', uri=True) as source, \
+             sqlite3.connect(db) as dest:
+            source.backup(dest)
+        shutil.copytree(seed / 'storage', work / 'storage' / 'files')
+        env.update(CAMPFIRE_DATABASE_PATH=str(db), CAMPFIRE_STORAGE_PATH=str(work / 'storage'),
+                   CAMPFIRE_FILES_PATH=str(work / 'storage' / 'files'), GO_CPU_PROFILE=str(out))
+        target, front = helper.free_port(), helper.free_port()
+        while front == target:
+            front = helper.free_port()
+        base = f'http://127.0.0.1:{front}'
+        log = work / 'server.log'
+        env.update(TARGET_PORT=str(target), HTTP_PORT=str(front))
+        with log.open('w') as logfile:
+            proc = subprocess.Popen(pinned(args.server_cpus, str(binary), 'server'), cwd=ROOT, env=env,
+                                    stdout=logfile, stderr=subprocess.STDOUT)
+            try:
+                wait_ready(base, proc, log)
+                load = lambda *argv: json.loads(subprocess.check_output(
+                    pinned(args.loadgen_cpus, str(loadgen), *argv), text=True, timeout=180))
+                cookie = load('login', '--base', base, '--email', labels['emails.david'],
+                              '--password', labels['passwords.all'])['cookie']
+                scrape = load('scrape', '--base', base, '--cookie', cookie, '--room', str(room))
+                csrf = scrape['csrf'] or ''
+                routes = {
+                    'room_show': ['--path', f'/rooms/{room}'],
+                    'messages_page': ['--path', f'/rooms/{room}/messages?before={labels["messages.busy_060"]}'],
+                    'sidebar': ['--path', '/users/me/sidebar'],
+                    'search': ['--path', '/searches?q=coffee'],
+                    'post_message': ['--post-room', str(write_room), '--csrf', csrf],
+                }
+                samples = {}
+                for name in FIVE_ROUTES:
+                    common = ['http', '--base', base, '--cookie', cookie, *routes[name]]
+                    load(*common, '--conc', str(args.warmup_concurrency), '--duration', str(args.warmup))
+                    sample = load(*common, '--conc', str(args.concurrency), '--duration', str(args.seconds))
+                    if sample['errors'] or set(sample['statuses']) != {'200'}:
+                        raise RuntimeError(f'{name}: unsuccessful requests {sample}')
+                    samples[name] = {'rps': sample['rps'], 'p99_ms': sample['latency'].get('p99_ms'),
+                                     'ok': sample['ok'], 'bytes': sample['avg_bytes']}
+                    print(f'{name}: {sample["rps"]} req/s, p99={sample["latency"].get("p99_ms")}ms', flush=True)
+            finally:
+                proc.send_signal(subprocess.signal.SIGINT)
+                try:
+                    proc.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+        if not out.is_file() or out.stat().st_size == 0:
+            raise SystemExit(f'no profile written to {out}; see {log}')
+        provenance = {
+            'profile': out.name, 'bytes': out.stat().st_size, 'sha256': digest(out),
+            'collected_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'go_commit': text('git', '-C', str(ROOT), 'rev-parse', 'HEAD'),
+            'go_dirty': bool(text('git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=no')),
+            'binary_sha256': digest(binary), 'go_version': text('go', 'version'),
+            'seed': str(seed), 'seed_sha256': digest(seed / 'db' / 'production.sqlite3'),
+            'loadgen_sha256': digest(loadgen),
+            'routes': {name: samples[name] for name in FIVE_ROUTES},
+            'timed_seconds': args.seconds, 'warmup_seconds': args.warmup,
+            'concurrency': args.concurrency, 'warmup_concurrency': args.warmup_concurrency,
+            'gzip': True, 'listener': 'public front (HTTP_PORT)', 'gomaxprocs': args.gmp,
+            'campfire_gogc': args.gogc,
+            'server_cpus': args.server_cpus, 'loadgen_cpus': args.loadgen_cpus,
+            'load_start': Path('/proc/loadavg').read_text().strip(),
+            'host': text('uname', '-sr'), 'cpu': text('bash', '-c', "lscpu | sed -n 's/^Model name: *//p'"),
+            'command': 'bin/pgo-profile ' + ' '.join(sys.argv[1:]),
+        }
+        (out.parent / (out.name + '.provenance.json')).write_text(json.dumps(provenance, indent=2) + '\n')
+        print(f'profile {out} ({provenance["bytes"]} bytes), provenance {out.name}.provenance.json')
+
+
+if __name__ == '__main__':
+    main()

@@ -111,9 +111,12 @@ COPY bin/build-assets bin/build-assets
 COPY reference/crates/assets reference/crates/assets
 COPY reference/reference reference/reference
 RUN python3 bin/build-assets
+# `COPY cmd cmd` above brings cmd/campfire/default.pgo, the PGO profile bin/pgo-profile collects
+# from the production workload. -pgo=auto uses it from the main package directory and builds
+# without PGO if it is absent.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -tags sqlite_fts5 -trimpath -ldflags='-s -w' -o /out/campfire ./cmd/campfire
+    go build -tags sqlite_fts5 -trimpath -pgo=auto -ldflags='-s -w' -o /out/campfire ./cmd/campfire
 
 
 # The shared libraries and executables that go into the runtime, in one directory tree.
@@ -183,15 +186,21 @@ USER 1000:1000
 
 # Configure environment defaults
 ENV RAILS_ENV="production"
+ENV CAMPFIRE_GOGC=200
 ENV HTTP_IDLE_TIMEOUT=60
 ENV HTTP_READ_TIMEOUT=300
 ENV HTTP_WRITE_TIMEOUT=300
 
 # GC policy knobs: CAMPFIRE_GOGC (GOGC target percentage, or `off`) and
-# CAMPFIRE_GOMEMLIMIT (bytes, or a MiB/GiB suffix) are read by the binary at
-# startup and are intentionally not defaulted here — the runtime's own
-# GOGC/GOMEMLIMIT environment handling and Go defaults apply. The shipped
-# values land with the ENGINE-47 measurement, not before it.
+# CAMPFIRE_GOMEMLIMIT (bytes, or a MiB/GiB suffix) are read by the binary at startup.
+# CAMPFIRE_GOGC=200 is the ENGINE-47 measurement's winner: on the harness read workload it
+# halves GC CPU per request (2.91 -> 1.56 us) and cuts total CPU per request by 6.9% (median of
+# 18 paired runs; the identically-configured noise-floor arm sits at 1.00), at the cost of a
+# higher peak RSS (71 -> 87 MiB). CAMPFIRE_GOMEMLIMIT is deliberately left unset: a 256 MiB
+# limit was measured as non-binding and indistinguishable from no limit at that peak, and a
+# fixed limit would only risk collector thrash in memory-heavy workloads. Set either knob to
+# override; `CAMPFIRE_GOGC=100` rolls the default back.
+# See bench/results/gc-policy-opt-runtime/README.md.
 
 # Set version and revision
 ARG APP_VERSION
