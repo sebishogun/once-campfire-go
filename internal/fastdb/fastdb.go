@@ -702,17 +702,21 @@ func (c *Conn) sessionActive(token string) (User, time.Time, error) {
 	if err := h.st.BindText(1, token); err != nil {
 		return user, lastActive, err
 	}
-	rows := Rows{stmt: h.st}
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return user, lastActive, err
-		}
-		return user, lastActive, ErrNoRows
-	}
-	if user, err = scanUser(&rows); err != nil {
+	// The ten columns are captured in one transition (StepRow) and decoded
+	// through the same scanUser the live cursors use, so the fastdb lane
+	// stays byte-equal to database/sql's per-column Scan.
+	row, err := h.st.StepRow()
+	if err != nil {
 		return user, lastActive, err
 	}
-	if lastActive, err = rows.Stamp(9); err != nil {
+	if !row {
+		return user, lastActive, ErrNoRows
+	}
+	src := cellSource{st: h.st}
+	if user, err = scanUser(src); err != nil {
+		return user, lastActive, err
+	}
+	if lastActive, err = src.Stamp(9); err != nil {
 		return user, lastActive, err
 	}
 	return user, lastActive, nil
@@ -1049,43 +1053,45 @@ func (c *Conn) anchorStamp(room, anchor int64) ([]byte, error) {
 }
 
 // scanUser decodes the nine userColumns columns of the current row.
-func scanUser(rows *Rows) (User, error) {
-	return scanUserAt(rows, 0)
+func scanUser(src rowSource) (User, error) {
+	return scanUserAt(src, 0)
 }
 
 // scanUserAt decodes the nine userColumns columns starting at column off,
-// for joined statements whose room columns precede the user columns.
-func scanUserAt(rows *Rows, off int) (User, error) {
+// for joined statements whose room columns precede the user columns. It takes
+// the row source rather than a *Rows so the auth path's captured row
+// (cellSource) and every live cursor decode through the same code.
+func scanUserAt(src rowSource, off int) (User, error) {
 	var user User
 	var err error
-	if user.ID, err = rows.Int64(off + 0); err != nil {
+	if user.ID, err = src.Int64(off + 0); err != nil {
 		return user, err
 	}
-	if user.Name, err = rows.Text(off + 1); err != nil {
+	if user.Name, err = src.Text(off + 1); err != nil {
 		return user, err
 	}
-	if user.Email, err = rows.Text(off + 2); err != nil {
+	if user.Email, err = src.Text(off + 2); err != nil {
 		return user, err
 	}
-	if user.Password, err = rows.Text(off + 3); err != nil {
+	if user.Password, err = src.Text(off + 3); err != nil {
 		return user, err
 	}
-	role, err := rows.Int64(off + 4)
+	role, err := src.Int64(off + 4)
 	if err != nil {
 		return user, err
 	}
-	status, err := rows.Int64(off + 5)
+	status, err := src.Int64(off + 5)
 	if err != nil {
 		return user, err
 	}
 	user.Role, user.Status = int(role), int(status)
-	if user.Bio, err = rows.Text(off + 6); err != nil {
+	if user.Bio, err = src.Text(off + 6); err != nil {
 		return user, err
 	}
-	if user.UpdatedAt, err = rows.Stamp(off + 7); err != nil {
+	if user.UpdatedAt, err = src.Stamp(off + 7); err != nil {
 		return user, err
 	}
-	if user.BotToken, err = rows.Text(off + 8); err != nil {
+	if user.BotToken, err = src.Text(off + 8); err != nil {
 		return user, err
 	}
 	return user, nil

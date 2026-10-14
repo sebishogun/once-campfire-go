@@ -21,6 +21,10 @@
 //   - ColumnBytes returns a view of SQLite-owned memory and is documented as
 //     valid only until the next Step/Reset/Finalize. ColumnText and the
 //     fastdb ColumnTextInto copy before returning.
+//   - StepRow captures a row into a C row buffer owned by the statement, so
+//     no Go pointer crosses into C and no Go object holds SQLite memory: the
+//     Cell accessors read that buffer and expose the same
+//     valid-until-Step/Reset views as ColumnBytes.
 package csqlite
 
 /*
@@ -33,6 +37,67 @@ package csqlite
 static int fastdb_bind_text(sqlite3_stmt *stmt, int idx, const void *val, int n) {
 	if (val == NULL) val = "";
 	return sqlite3_bind_text(stmt, idx, (const char *)val, n, SQLITE_TRANSIENT);
+}
+
+// fastdb_data_version performs the whole data_version observation — step,
+// column read, reset — in one cgo transition. It reproduces the unfused
+// sequence exactly: a step result other than ROW/DONE is returned without a
+// reset (the Go side maps it through the connection error), and otherwise the
+// column is read before the reset whose result code is returned.
+static int fastdb_data_version(sqlite3_stmt *stmt, sqlite3_int64 *out) {
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+		return rc;
+	}
+	*out = sqlite3_column_int64(stmt, 0);
+	return sqlite3_reset(stmt);
+}
+
+// fastdb_cell is one captured column of a row. bytes aliases SQLite's row
+// buffer and is valid only until the next step, reset or finalize of stmt.
+typedef struct {
+	int ctype;
+	int nbytes;
+	const unsigned char *bytes;
+	sqlite3_int64 ival;
+} fastdb_cell;
+
+// fastdb_step_too_wide reports a row with more columns than the caller's cell
+// buffer holds. It is not a SQLite result code.
+#define FASTDB_STEP_TOO_WIDE (-2)
+
+// fastdb_step_cells steps stmt and, on a row, captures up to cap columns into
+// cells in one cgo transition. The per-column order is the one
+// ColumnType/ColumnInt64/ColumnBytes use — type, then the integer, then bytes
+// followed by text — so a captured cell reports exactly what the live
+// accessors would for the same row.
+static int fastdb_step_cells(sqlite3_stmt *stmt, fastdb_cell *cells, int cap) {
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_ROW) {
+		return rc;
+	}
+	int n = sqlite3_column_count(stmt);
+	if (n > cap) {
+		return FASTDB_STEP_TOO_WIDE;
+	}
+	for (int i = 0; i < n; i++) {
+		int t = sqlite3_column_type(stmt, i);
+		cells[i].ctype = t;
+		cells[i].ival = 0;
+		cells[i].nbytes = 0;
+		cells[i].bytes = NULL;
+		if (t == SQLITE_INTEGER) {
+			cells[i].ival = sqlite3_column_int64(stmt, i);
+		}
+		if (t != SQLITE_NULL) {
+			int nb = sqlite3_column_bytes(stmt, i);
+			cells[i].nbytes = nb;
+			if (nb > 0) {
+				cells[i].bytes = sqlite3_column_text(stmt, i);
+			}
+		}
+	}
+	return rc;
 }
 */
 import "C"
@@ -254,6 +319,88 @@ func openError(rc C.int, db *C.sqlite3) error {
 type Stmt struct {
 	conn *Conn
 	stmt *C.sqlite3_stmt
+	// cells is the C row buffer StepRow captures into; nil until the first
+	// StepRow. It is owned by the statement and freed by Finalize, so a
+	// captured row costs no allocation on the hot path.
+	cells *C.fastdb_cell
+	// dv is fastdb_data_version's out-parameter scratch. Keeping it on the
+	// statement means the fused read passes a pointer into this heap object
+	// instead of a stack variable, which cgo would otherwise force to escape
+	// on every observation.
+	dv C.sqlite3_int64
+}
+
+// maxCells bounds a captured row. The widest statement the read layer runs is
+// the sidebar join at 16 columns; StepRow reports errTooWide rather than
+// truncating when a statement is wider, so a query change fails loudly.
+const maxCells = 16
+
+// errRowBuffer reports a failed row-buffer allocation.
+var errRowBuffer = errors.New("sqlite: out of memory allocating row buffer")
+
+// errTooWide reports a StepRow on a statement wider than maxCells.
+var errTooWide = errors.New("sqlite: statement has more columns than StepRow captures")
+
+// DataVersion steps the statement, reads column 0 as an integer and resets it,
+// all in one cgo transition. The statement must be the one-row
+// "PRAGMA data_version"; the returned error is the step failure or, for a
+// successful step, the reset's result, exactly as the unfused sequence
+// reported.
+func (s *Stmt) DataVersion() (uint64, error) {
+	if rc := C.fastdb_data_version(s.stmt, &s.dv); rc != C.SQLITE_OK {
+		return 0, s.conn.err(rc)
+	}
+	return uint64(s.dv), nil
+}
+
+// StepRow advances the statement like Step and, when a row is available,
+// captures its columns for the Cell accessors in the same cgo transition
+// (Step plus one ColumnType/ColumnInt64/ColumnBytes crossing per column would
+// otherwise cost several transitions per row). The captured view is valid only
+// until the next StepRow, Reset or Finalize, exactly like ColumnBytes.
+func (s *Stmt) StepRow() (bool, error) {
+	if s.cells == nil {
+		s.cells = (*C.fastdb_cell)(C.malloc(C.size_t(maxCells) * C.size_t(unsafe.Sizeof(C.fastdb_cell{}))))
+		if s.cells == nil {
+			return false, errRowBuffer
+		}
+	}
+	switch rc := C.fastdb_step_cells(s.stmt, s.cells, C.int(maxCells)); rc {
+	case C.SQLITE_ROW:
+		return true, nil
+	case C.SQLITE_DONE:
+		return false, nil
+	case C.FASTDB_STEP_TOO_WIDE:
+		return false, errTooWide
+	default:
+		return false, s.conn.err(rc)
+	}
+}
+
+// cell returns the captured column i. i must be within the last StepRow's
+// column count; the caller holds the row, so no bound is re-checked here, as
+// with sqlite3_column_*.
+func (s *Stmt) cell(i int) *C.fastdb_cell {
+	return (*C.fastdb_cell)(unsafe.Add(unsafe.Pointer(s.cells), uintptr(i)*unsafe.Sizeof(C.fastdb_cell{})))
+}
+
+// CellType returns captured column i's value class.
+func (s *Stmt) CellType(i int) int { return int(s.cell(i).ctype) }
+
+// CellInt64 returns captured column i as an integer. The integer is captured
+// only for an INTEGER column, so the caller checks CellType first, exactly as
+// the read layer's decode does.
+func (s *Stmt) CellInt64(i int) int64 { return int64(s.cell(i).ival) }
+
+// CellBytes returns a view of captured column i's bytes. Like ColumnBytes the
+// view aliases SQLite's row buffer and is valid only until the next StepRow,
+// Reset or Finalize; it is nil for NULL and for a zero-length value.
+func (s *Stmt) CellBytes(i int) []byte {
+	c := s.cell(i)
+	if c.nbytes == 0 || c.bytes == nil {
+		return nil
+	}
+	return unsafe.Slice((*byte)(unsafe.Pointer(c.bytes)), int(c.nbytes))
 }
 
 // Step advances one row. It reports false at SQLITE_DONE and returns a typed
@@ -322,6 +469,10 @@ func (s *Stmt) Finalize() error {
 	}
 	rc := C.sqlite3_finalize(s.stmt)
 	s.stmt = nil
+	if s.cells != nil {
+		C.free(unsafe.Pointer(s.cells))
+		s.cells = nil
+	}
 	if rc != C.SQLITE_OK {
 		return &Error{Code: int(rc), Msg: C.GoString(C.sqlite3_errstr(rc))}
 	}

@@ -27,6 +27,54 @@ type Rows struct {
 	err  error
 }
 
+// rowSource is the column access a single-row decode needs. *Rows reads the
+// live statement; cellSource reads a row already captured by Stmt.StepRow.
+// Both apply the same type rules and return the same errors, so one decode
+// (scanUserAt) serves both.
+type rowSource interface {
+	Int64(i int) (int64, error)
+	Text(i int) (string, error)
+	Stamp(i int) (time.Time, error)
+}
+
+// cellSource decodes a row captured by csqlite.Stmt.StepRow, whose columns
+// were read in one cgo transition. The captured views are valid until the
+// statement is reset, which is after the decode returns; the accessors mirror
+// the live Rows accessors column for column.
+type cellSource struct {
+	st *csqlite.Stmt
+}
+
+// Kind returns column i's captured value class.
+func (c cellSource) Kind(i int) Kind { return Kind(c.st.CellType(i)) }
+
+// Int64 returns column i as an integer with the same INTEGER-only rule as
+// Rows.Int64.
+func (c cellSource) Int64(i int) (int64, error) {
+	kind := c.Kind(i)
+	if kind != KindInteger {
+		return 0, int64KindError(i, kind)
+	}
+	return c.st.CellInt64(i), nil
+}
+
+// Text returns column i as a freshly allocated string; NULL is ErrNull.
+func (c cellSource) Text(i int) (string, error) {
+	if c.st.CellType(i) == csqlite.TypeNull {
+		return "", csqlite.ErrNull
+	}
+	return string(c.st.CellBytes(i)), nil
+}
+
+// Stamp decodes column i as a timestamp in place from the captured bytes,
+// which are never retained.
+func (c cellSource) Stamp(i int) (time.Time, error) {
+	if c.st.CellType(i) == csqlite.TypeNull {
+		return time.Time{}, csqlite.ErrNull
+	}
+	return decodeStamp(c.st.CellBytes(i))
+}
+
 // Next advances to the next row and reports whether one is available.
 func (r *Rows) Next() bool {
 	if r.err != nil {
@@ -73,10 +121,18 @@ func (r *Rows) IsNull(i int) bool { return r.stmt.ColumnType(i) == csqlite.TypeN
 // surviving TEXT/REAL is a schema-drift or corruption signal, so it is an
 // error rather than a coerced value.
 func (r *Rows) Int64(i int) (int64, error) {
-	if kind := r.Kind(i); kind != KindInteger {
-		return 0, fmt.Errorf("fastdb: column %d is %s, want INTEGER", i, kind)
+	kind := r.Kind(i)
+	if kind != KindInteger {
+		return 0, int64KindError(i, kind)
 	}
 	return r.stmt.ColumnInt64(i), nil
+}
+
+// int64KindError is the one source of the INTEGER-only rejection message,
+// shared by the live Rows accessor and the captured cellSource so the two
+// decode paths cannot drift.
+func int64KindError(i int, kind Kind) error {
+	return fmt.Errorf("fastdb: column %d is %s, want INTEGER", i, kind)
 }
 
 // Bool returns column i as SQLite's boolean convention. It is for expressions
