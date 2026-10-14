@@ -74,7 +74,7 @@ func TestPushOutboxRetriesAndStartupReplays(t *testing.T) {
 	if due, err := app.DB.DuePush(ctx, nil, 10); err != nil || len(due) != 0 {
 		t.Fatalf("failed intent did not back off: %v %v", due, err)
 	}
-	if _, err = app.DB.Write.Exec("UPDATE campfire_push_outbox SET retry_at=0"); err != nil {
+	if _, err = app.DB.Write.Exec("UPDATE campfire_push_outbox SET retry_at=0; UPDATE campfire_push_progress SET attempted_at=0 WHERE completed=0"); err != nil {
 		t.Fatal(err)
 	}
 	app.Push.Resolver = &countingDNS{}
@@ -86,7 +86,7 @@ func TestPushOutboxRetriesAndStartupReplays(t *testing.T) {
 		t.Fatalf("retry intent: %v %v", ids, err)
 	}
 	transport.status.Store(201)
-	if _, err = app.DB.Write.Exec("UPDATE campfire_push_outbox SET retry_at=0"); err != nil {
+	if _, err = app.DB.Write.Exec("UPDATE campfire_push_outbox SET retry_at=0; UPDATE campfire_push_progress SET attempted_at=0 WHERE completed=0"); err != nil {
 		t.Fatal(err)
 	}
 	// No messageCreated wake: a fresh runner must discover committed intent.

@@ -390,6 +390,7 @@ func prepare(db *sql.DB) error {
 		attempted_at INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY(message_id,subscription_id)
 	);
+	CREATE INDEX IF NOT EXISTS campfire_push_progress_subscription ON campfire_push_progress(subscription_id);
 	CREATE TRIGGER IF NOT EXISTS campfire_message_push_outbox AFTER INSERT ON messages
 	BEGIN INSERT INTO campfire_push_outbox(message_id) VALUES (new.id); END;`); err != nil {
 		return err

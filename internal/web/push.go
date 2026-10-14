@@ -299,8 +299,14 @@ var deliveryTimeout = 5 * time.Second
 // per-subscriber badge and payload, and the delivery attempts, all after the
 // posting request has responded (the reference runs this job async).
 func (s *Server) deliverPushProgress(ctx context.Context, message database.Message, room database.Room, progress []database.PushProgress) ([]database.PushProgress, database.PushOutcome, error) {
-	outcome := database.PushOutcome{MessageID: message.ID}
+	// Partial work remains due, but yields to older scheduled messages rather
+	// than retaining retry_at=0 forever during a fan-out longer than one budget.
+	outcome := database.PushOutcome{MessageID: message.ID, RetryAt: time.Now().Unix()}
 	mentioned := s.mentionedIDs(ctx, message.Body)
+	mentionedSet := make(map[int64]struct{}, len(mentioned))
+	for _, id := range mentioned {
+		mentionedSet[id] = struct{}{}
+	}
 	remaining := cap(progress) - len(progress)
 	subscriptions, err := s.DB.PendingPushRecipients(ctx, message.ID, room.ID, message.CreatorID, mentioned, remaining+1)
 	if err != nil {
@@ -325,11 +331,20 @@ func (s *Server) deliverPushProgress(ctx context.Context, message database.Messa
 	body = integrations.TruncatePush(body, 3072)
 	var first error
 	for i, subscription := range subscriptions {
+		if subscription.RetryAt > time.Now().Unix() {
+			// Candidates are ordered by persisted attempt time. Once a sleeping
+			// failure is reached, every remaining candidate is also sleeping,
+			// including candidates beyond this bounded page. Do not acknowledge
+			// them or restart the round; let later messages use the scan budget.
+			outcome.RetryAt = subscription.RetryAt
+			return progress, outcome, first
+		}
 		if ctx.Err() != nil || i == remaining {
 			// Untouched suffix stays immediately due, ahead of failed recipients.
 			return progress, outcome, first
 		}
-		current, err := s.DB.CurrentPushRecipient(ctx, subscription.ID, room.ID, message.CreatorID, mentioned)
+		_, isMentioned := mentionedSet[subscription.UserID]
+		current, err := s.DB.CurrentPushRecipient(ctx, subscription.ID, subscription.UserID, room.ID, message.CreatorID, isMentioned)
 		if errors.Is(err, sql.ErrNoRows) {
 			progress = append(progress, database.PushProgress{MessageID: message.ID, SubscriptionID: subscription.ID, Completed: true})
 			continue
@@ -358,7 +373,7 @@ func (s *Server) deliverPushProgress(ctx context.Context, message database.Messa
 	}
 	outcome.Complete = first == nil
 	if first != nil {
-		outcome.RetryAt = time.Now().Add(30 * time.Second).Unix()
+		outcome.RetryAt = time.Now().Add(31 * time.Second).Unix()
 	}
 	return progress, outcome, first
 }

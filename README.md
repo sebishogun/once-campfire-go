@@ -181,9 +181,13 @@ per acknowledgement transaction, with a five-second network/query budget. Networ
 run outside that transaction. `campfire_push_progress` records successful subscriptions
 and attempt order: acknowledged recipients are excluded, and untouched recipients precede
 failed ones. Expiry stops new deliveries; untouched messages stay due without a retry update.
-After a message's pending recipients have all been attempted, failures back off 30 seconds;
-an untouched suffix stays due for the next scan. Eligibility and subscription keys are
-refreshed before each send. The progress/acknowledgement transaction adds a commit and
+Each failed recipient backs off at least 30 seconds from its persisted attempt time
+(rounded up to whole seconds). Sleeping failures are never retried to fill a batch;
+the earliest eligible failure determines the next message retry once untouched work
+is exhausted. A partial fan-out remains due but moves behind older scheduled messages,
+so even a failure cohort larger than one batch or delivery budget yields to later messages.
+Eligibility and subscription keys are refreshed before each send with a fixed query
+and one parsed mention set per message. The progress/acknowledgement transaction adds a commit and
 can invalidate generation-keyed caches, but does so once per bounded scan, not per message.
 Retention policy: persistent failures remain indefinitely (no automatic dead-letter deletion)
 until delivery succeeds, eligibility disappears, the message is deleted, or VAPID is disabled.
@@ -193,7 +197,9 @@ the scan's progress commit can duplicate that scan's accepted notifications. Com
 recipient acknowledgements are not replayed. Replay uses current message content, membership
 and subscriptions; deleting a message cascades intent and progress. Disabled VAPID intentionally
 discards pending intent. Websocket publication is best effort and is not replayed. Subprocess
-crash tests cover primary-commit and pre-notification boundaries; simulated push-service and DNS
+crash tests cover primary-commit, pre-notification, remote acceptance before progress commit,
+and interruption after the second INSERT of a three-recipient progress transaction;
+simulated push-service and DNS
 failures, startup replay and queue saturation are covered locally, not against a live push provider.
 
 Cable subscriptions reauthorize sessions before side effects, and presence checks the token and
