@@ -21,6 +21,9 @@ bench/gc-policy --values 100 200 --reps 5 --warmup 5 --seconds 3 --out bench/res
 | 5 s | `200` | 23.32 | 54.44 | 2.33× | 0.921 | 2.197 |
 
 * Aligned CPU µs/req: +1.1% (`100`) and +0.7% (`200`) across a 5× warmup. No systematic movement.
+  (The aligned figures are start-attributed, whole-cycle measurements over half-open windows; see
+  `bench/gc-policy`'s docstring and `bench/test_runtime_levers.py` for what that does and does not
+  measure. The correction here is about the numerator/denominator, not the attribution.)
 * Whole-run CPU µs/req: +85% (`100`) and +84% (`200`). The artefact, proportional to the warmup
   work it counts and unrelated to the timed requests.
 * The `200`-vs-`100` aligned ratio is 0.963 at 1 s and 0.959 at 5 s, so the conclusion does not

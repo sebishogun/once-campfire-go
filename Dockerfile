@@ -113,7 +113,9 @@ COPY reference/reference reference/reference
 RUN python3 bin/build-assets
 # `COPY cmd cmd` above brings cmd/campfire/default.pgo, the PGO profile bin/pgo-profile collects
 # from the production workload. -pgo=auto uses it from the main package directory and builds
-# without PGO if it is absent.
+# without PGO if it is absent. The committed profile is a bootstrap input (collected from a
+# -pgo=off build of the same revision) and no PGO benefit was detected on the read workload
+# (bench/results/pgo-on-off/), so it ships as the mechanism, not as a measured speedup.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go build -tags sqlite_fts5 -trimpath -pgo=auto -ldflags='-s -w' -o /out/campfire ./cmd/campfire

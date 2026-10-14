@@ -35,8 +35,16 @@ statistic. It is the yardstick, not a result.
 
 Per-request figures are **aligned-window** measurements: the process's CPU time is read from
 `/proc` immediately before and after the timed load-generator window, and each GC cycle is
-attributed to the window containing its own runtime timestamp, so the numerator and denominator
-cover exactly the same requests.
+attributed to the window its **start** timestamp falls in. Attribution is start-attributed and
+whole-cycle over half-open windows `[start, end)`: Go's gctrace `@Ts` is the time the runtime
+records when a cycle begins (sweep termination), not when it completes, and the clock origin is
+the script's own post-`Popen` reading rather than the runtime's init time. So a cycle that begins
+in a warmup counts there even if it finishes inside a measured window, and one that begins inside
+a window counts there in full even if it finishes after it. Cycles are 0.1–1 ms against 4 s
+windows, so the misattribution is bounded by the handful straddling each boundary; the boundary
+behaviour is pinned by `bench/test_runtime_levers.py`. The `/proc` CPU deltas do not depend on
+any of this. What the attribution does *not* measure is a cycle's completion time — the runtime
+does not record one.
 
 The decoded body of every route is fetched once per run, decoded, normalized for the listener
 origin and the room page's live cursor, and is equal in all 64 runs. This is decoded-body equality
@@ -111,11 +119,13 @@ The GC comparison above ran on a single binary — `./campfire`, the PGO build �
 about PGO itself. PGO on/off was measured separately with the same harness and accounting
 (`bench/results/pgo-on-off/`, 12 repetitions, PGO build `f3f063bb…` vs the same source built with
 `-pgo=off`, `d46650a9…`): pooled CPU µs/req ratio no-PGO/PGO **0.995** [0.837–1.195] with 29/48
-pairs below 1, against a noise floor of 1.007 with 18/48. That is no detectable difference: the
-PGO benefit is **not established** for this workload on this host — a 1–2% effect would be
-invisible here. The shipped build uses the committed profile because that was the lever's
-deliverable and it is verified to engage and to produce identical decoded bytes, not because a
-speedup was measured.
+pairs below 1, against a noise floor of 1.007 with 18/48. The two medians are indistinguishable
+and the signs are split — but the 48 pairs come from 12 repetitions of 4 routes sharing one
+server process and one host window, so they are not 48 independent samples and no confidence
+bound is claimed. The honest statement is the narrow one: **no PGO benefit was detected at this
+sample size on this host**, not that no benefit exists. The shipped build uses the committed
+profile because that was the lever's deliverable and it is verified to engage and to produce
+identical decoded bytes, not because a speedup was measured.
 
 ## Uncertainty
 

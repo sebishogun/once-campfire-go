@@ -9,11 +9,21 @@ server pinned to four CPUs.
 
 Accounting (ENGINE-47 review): every per-request figure is an *aligned-window* measurement. The
 process's CPU time is read from /proc immediately before and after each timed load-generator
-window, and each GC cycle is attributed to the window that contains its own runtime timestamp
-(`gc N @Ts`), so the numerator and the denominator cover the same requests. Whole-process CPU or
-whole-log GC CPU divided by timed requests only — the first version of this script — puts warmup
-and setup work in the numerator and not in the denominator, which inflates every per-request
-figure by the warmup/timed ratio. Both metrics are reported so the correction is visible.
+window, and each GC cycle is attributed to the window that contains its start timestamp, so the
+numerator and the denominator cover the same requests. Whole-process CPU or whole-log GC CPU
+divided by timed requests only — the first version of this script — puts warmup and setup work in
+the numerator and not in the denominator, which inflates every per-request figure by the
+warmup/timed ratio. Both metrics are reported so the correction is visible.
+
+GC attribution is **start-attributed and whole-cycle**, and that is all it claims. Go's gctrace
+`@Ts` field is the time the runtime records when the cycle begins (sweep termination); the runtime
+does not record completion. Windows are half-open, `[start, end)`. A cycle that begins during a
+warmup and finishes inside a measured window is therefore counted in the warmup, not the window,
+and one that begins inside a window and finishes after it is counted in the window in full. The
+clock origin is this script's post-`Popen` reading, not the runtime's init time, so the absolute
+mapping carries a sub-millisecond offset. Cycles are 0.1–1 ms, so the misattribution is bounded by
+the handful straddling each boundary; `bench/test_runtime_levers.py` pins the boundary behaviour
+with synthetic cycles crossing both edges. The /proc CPU deltas are independent of all this.
 
 Arms are given as `[BINARY/]GOGC[:LIMIT][@NAME]` (for example `200:256MiB`, `nopgo/200`,
 `100@null`); binaries come from `--binary NAME=PATH` (default `go=<repo>/campfire`). The first arm
@@ -23,9 +33,13 @@ because the host is shared: the report gives medians and min–max, and pairs ea
 against the baseline within the same repetition (a ratio, which cancels slow host drift).
 GODEBUG=gctrace=1 is set for every arm so GC CPU and cycle counts come from the runtime itself.
 
-The decoded body of every route is fetched once per run, normalized for the listener origin and
-the room page's live cursor, and required to be equal across every run: the lever must not move
-the decoded response.
+The decoded body of every route is fetched once per run, decoded, normalized for the listener
+origin and the room page's live cursor, and compared against one baseline per route across every
+arm and run; a mismatch fails the run. This is decoded-body equality after that normalization —
+not raw-wire identity.
+
+`--report-only DIR` rebuilds `report.md` from a previous run's `metadata.json` and `raw.json`
+without measuring anything, so the report can follow a change to its own wording.
 """
 import argparse, datetime, hashlib, json, os, platform, re, shutil, socket, sqlite3, statistics, subprocess, tempfile, threading, time, urllib.request
 from pathlib import Path
@@ -102,12 +116,123 @@ def cpu_seconds(pid):
 
 
 def parse_gctrace(log):
-    """(cycles, share) with each cycle's runtime timestamp and CPU time, from gctrace lines."""
+    """Per cycle: the runtime's `@Ts` start timestamp, the CPU time it reports, its index and
+    the GC share reported with it. `@Ts` is the cycle's start (sweep termination), not its end."""
     cycles = []
     for match in GCTRACE.finditer(log):
         cycles.append(dict(n=int(match.group(1)), at=float(match.group(2)), share=int(match.group(3)),
                            cpu_ms=sum(float(part) for part in re.split(r'[+/]', match.group(4)))))
     return cycles
+
+
+def attribute_cycles(cycles, window_start, window_end):
+    """The cycles whose *start* falls in the half-open window [window_start, window_end).
+
+    Start-attributed and whole-cycle: the window bounds are the script's own clock readings mapped
+    onto the runtime's start timestamps, so they carry a sub-millisecond offset; a cycle crossing
+    either edge belongs to exactly one side (see the module docstring).
+    """
+    return [cycle for cycle in cycles if window_start <= cycle['at'] < window_end]
+
+
+def render_report(meta, arms, windows, runs, settings):
+    def group(label, route, field):
+        return [window[field] for window in windows if window['label'] == label and window['route'] == route]
+
+    def runs_of(label):
+        return [run for run in runs if run['label'] == label]
+
+    baseline = arms[0]['label']
+    legend = ', '.join(f"`{arm['label']}` ({arm['binary'] + '/' if arm['binary'] else ''}GOGC={arm['googc']}"
+                       + (f", limit={arm['gomemlimit']}" if arm['gomemlimit'] else '') + ')' for arm in arms)
+    report = ['# GC arms: aligned-window per-request accounting', '',
+        f"`{meta['go_commit']}` (checkout dirty: {meta['go_dirty']}), Go 1.27.1, {platform.node()}. "
+        f"Public front listener, gzip, {settings['concurrency']} concurrent clients on {settings['loadgen_cpus']}, "
+        f"server pinned to {settings['server_cpus']}, {settings['warmup']:g}s warmup and "
+        f"{settings['seconds']:g}s timed window per route, {settings['reps']} repetitions per arm, order "
+        f"rotating cyclically each repetition so every arm occupies every slot. "
+        f"Decoded bodies are equal across every arm and run (normalized for the listener origin and the "
+        f"room page's live cursor). GODEBUG=gctrace=1 in every arm; host load at start: {meta['load_before']}.", '',
+        f'Arms: {legend}. An arm with the same settings as the baseline and a different label is the host '
+        'noise floor. Binaries, with their hashes, are in `metadata.json`.', '',
+        'Every CPU and GC per-request figure below is an aligned-window measurement: the process CPU '
+        'delta and the GC-cycle CPU of the timed load-generator window only, divided by that window\'s '
+        'requests. GC attribution is **start-attributed and whole-cycle** — the gctrace `@Ts` field is '
+        'the cycle\'s start, not its completion, and windows are half-open `[start, end)` — so a cycle '
+        'beginning in a warmup counts there even if it finishes inside a window, and one beginning in a '
+        'window counts there in full even if it finishes after. See the correction section at the end.', '',
+        '| Route | Arm | req/s, median [min–max] | CPU µs/req, median [min–max] | GC CPU µs/req, median | GC cycles, median | RSS peak MiB, median [min–max] |',
+        '|---|---:|---:|---:|---:|---:|---:|']
+    for name in READ_ROUTES:
+        for arm in arms:
+            rates = group(arm['label'], name, 'rps')
+            cpu = group(arm['label'], name, 'cpu_us_per_request')
+            gc = group(arm['label'], name, 'gc_cpu_per_request_us')
+            cycles = group(arm['label'], name, 'gc_cycles')
+            rss = [run['rss_peak_kib'] / 1024 for run in runs_of(arm['label'])]
+            report.append(f"| {name} | {arm['label']} | {statistics.median(rates):,.0f} [{min(rates):,.0f}–{max(rates):,.0f}] | "
+                          f"{statistics.median(cpu):.2f} [{min(cpu):.2f}–{max(cpu):.2f}] | "
+                          f"{statistics.median(gc):.3f} | {statistics.median(cycles):.0f} | "
+                          f"{statistics.median(rss):.1f} [{min(rss):.1f}–{max(rss):.1f}] |")
+    report += ['', '## Paired ratios against the baseline (same repetition and route)', '',
+        f'Ratios to the `{baseline}` arm measured in the same repetition and on the same route, and the number of '
+        'pairs that favour the arm. A throughput ratio above 1 (or a CPU µs/req ratio below 1) with nearly every '
+        'pair agreeing is a clear sign; mixed signs mean the host noise is larger than the effect. The route pairs '
+        'of one repetition share a server process and a host window, so they are not independent repetitions: '
+        'the per-route columns and the pooled row should be read together.', '',
+        '| Route | Arm | req/s ratio, median [min–max] | pairs >1 | CPU µs/req ratio, median [min–max] | pairs <1 | GC µs/req ratio, median | pairs <1 |',
+        '|---|---:|---:|---:|---:|---:|---:|---:|']
+    pooled = {arm['label']: ([], [], []) for arm in arms[1:]}
+    for name in READ_ROUTES:
+        for arm in arms[1:]:
+            def pairs(field):
+                base, other = [], []
+                for rep in range(1, settings['reps'] + 1):
+                    base.append(next((w[field] for w in windows if w['label'] == baseline and w['rep'] == rep and w['route'] == name), None))
+                    other.append(next((w[field] for w in windows if w['label'] == arm['label'] and w['rep'] == rep and w['route'] == name), None))
+                return [o / b for b, o in zip(base, other) if b and o]
+            rate_ratios, cpu_ratios, gc_ratios = pairs('rps'), pairs('cpu_us_per_request'), pairs('gc_cpu_per_request_us')
+            report.append(f"| {name} | {arm['label']} | {statistics.median(rate_ratios):.3f} [{min(rate_ratios):.3f}–{max(rate_ratios):.3f}] | "
+                          f"{sum(1 for ratio in rate_ratios if ratio > 1)}/{len(rate_ratios)} | "
+                          f"{statistics.median(cpu_ratios):.3f} [{min(cpu_ratios):.3f}–{max(cpu_ratios):.3f}] | "
+                          f"{sum(1 for ratio in cpu_ratios if ratio < 1)}/{len(cpu_ratios)} | "
+                          f"{statistics.median(gc_ratios):.3f} | {sum(1 for ratio in gc_ratios if ratio < 1)}/{len(gc_ratios)} |")
+            pooled[arm['label']][0].extend(rate_ratios)
+            pooled[arm['label']][1].extend(cpu_ratios)
+            pooled[arm['label']][2].extend(gc_ratios)
+    report += ['', 'Pooled over all routes and repetitions (all pairs, not independent):', '',
+        '| Arm | req/s ratio, median [min–max] | pairs >1 | CPU µs/req ratio, median [min–max] | pairs <1 | GC µs/req ratio, median [min–max] | pairs <1 |',
+        '|---|---:|---:|---:|---:|---:|---:|']
+    for arm in arms[1:]:
+        rate_ratios, cpu_ratios, gc_ratios = pooled[arm['label']]
+        report.append(f"| {arm['label']} | {statistics.median(rate_ratios):.3f} [{min(rate_ratios):.3f}–{max(rate_ratios):.3f}] | "
+                      f"{sum(1 for ratio in rate_ratios if ratio > 1)}/{len(rate_ratios)} | "
+                      f"{statistics.median(cpu_ratios):.3f} [{min(cpu_ratios):.3f}–{max(cpu_ratios):.3f}] | "
+                      f"{sum(1 for ratio in cpu_ratios if ratio < 1)}/{len(cpu_ratios)} | "
+                      f"{statistics.median(gc_ratios):.3f} [{min(gc_ratios):.3f}–{max(gc_ratios):.3f}] | "
+                      f"{sum(1 for ratio in gc_ratios if ratio < 1)}/{len(gc_ratios)} |")
+    report += ['', '## Correction: aligned window vs whole-process CPU / timed requests', '',
+        'The first version of this script divided the whole process\'s CPU time (and the whole log\'s GC CPU) '
+        'by the timed requests only, so the warmup windows and the setup requests were in the numerator and '
+        'not in the denominator. The aligned figure is the one to quote; the whole-run figure is shown to make '
+        'the size of the correction visible. RSS and the GC cycle counts are unaffected.', '',
+        '| Arm | CPU µs/req, aligned | CPU µs/req, whole-run (biased) | bias | GC µs/req, aligned | GC µs/req, whole-run (biased) | bias |',
+        '|---|---:|---:|---:|---:|---:|---:|']
+    for arm in arms:
+        rows = runs_of(arm['label'])
+        aligned = [window['cpu_us_per_request'] for window in windows if window['label'] == arm['label']]
+        aligned_gc = [window['gc_cpu_per_request_us'] for window in windows if window['label'] == arm['label']]
+        whole = statistics.median(run['cpu_us_per_request_whole_run'] for run in rows)
+        whole_gc = statistics.median(run['gc_cpu_per_request_whole_run'] for run in rows)
+        report.append(f"| {arm['label']} | {statistics.median(aligned):.2f} | {whole:.2f} | {whole / statistics.median(aligned):.2f}× | "
+                      f"{statistics.median(aligned_gc):.3f} | {whole_gc:.3f} | {whole_gc / statistics.median(aligned_gc):.2f}× |")
+    report += ['', 'Per-window samples (route, requests, aligned CPU and GC deltas, window bounds), per-run RSS, CPU, '
+               'GC totals, decoded body hashes and log volumes are in `raw.json`; binary hashes, seed hash and host '
+               'identity in `metadata.json`; the GC and startup lines of each server run in `*.log`. The per-request '
+               'access log is left on (harness fidelity) and only its line and byte counts are kept. This is a '
+               'workstation measurement on a shared host; medians, spread and paired signs are the evidence, not '
+               'single samples.', '']
+    return '\n'.join(report) + '\n'
 
 
 def main():
@@ -124,7 +249,18 @@ def main():
     parser.add_argument('--server-cpus', default='8-11')
     parser.add_argument('--loadgen-cpus', default='12-15')
     parser.add_argument('--out', type=Path)
+    parser.add_argument('--report-only', type=Path, metavar='DIR',
+                        help='rebuild report.md from a previous run\'s metadata.json and raw.json')
     args = parser.parse_args()
+    if args.report_only:
+        directory = args.report_only.resolve()
+        meta = json.loads((directory / 'metadata.json').read_text())
+        raw = json.loads((directory / 'raw.json').read_text())
+        settings = meta['settings']
+        arms = [parse_arm(spec, settings['binaries']) for spec in settings['values']]
+        (directory / 'report.md').write_text(render_report(meta, arms, raw['windows'], raw['runs'], settings))
+        print(f'wrote {directory / "report.md"} from the recorded samples')
+        return
     if args.reps < 2 or len(args.values) < 2:
         parser.error('need at least two repetitions and two arms')
     binaries = {'go': (ROOT / 'campfire').resolve()}
@@ -160,8 +296,9 @@ def main():
         scope='same seed, CPU pinning and request windows; only CAMPFIRE_GOGC/CAMPFIRE_GOMEMLIMIT and the binary differ; '
               'per-request figures are aligned-window measurements (CPU and GC deltas around each timed window)',
         accounting='cpu_us_per_request and gc_cpu_per_request_us use the delta of /proc CPU time and of GC-cycle CPU '
-                   'across the timed load-generator window only; *_whole_run_us divide whole-process CPU and whole-log GC '
-                   'CPU by timed requests and are kept only to show the correction',
+                   'across the timed load-generator window only; GC attribution is start-attributed and whole-cycle '
+                   '(the gctrace timestamp is the cycle start) over half-open windows; *_whole_run_us divide '
+                   'whole-process CPU and whole-log GC CPU by timed requests and are kept only to show the correction',
         time=datetime.datetime.now(datetime.timezone.utc).isoformat(), host=platform.platform(),
         cpu=output('lscpu'), go_commit=output('git', '-C', str(ROOT), 'rev-parse', 'HEAD'),
         go_dirty=bool(output('git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=no')),
@@ -173,7 +310,7 @@ def main():
         load_before=Path('/proc/loadavg').read_text().strip())
     (out / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
     work = ROOT / 'bench/.work'; work.mkdir(exist_ok=True)
-    runs, windows = [], []
+    runs, windows, bodies = [], [], {}
     for rep in range(1, args.reps + 1):
         # Cyclic rotation, not a reversal: with more than two arms a reversal leaves the middle
         # arm in the same slot every repetition, which would hide host drift from the noise floor.
@@ -246,9 +383,13 @@ def main():
                             output('taskset', '-c', args.loadgen_cpus, str(loadgen), 'fetch', '--base', base, '--cookie', cookie, '--path', paths[name], '--out', str(tmp / f'{name}.body'), timeout=180)
                             decoded = (tmp / f'{name}.body').read_bytes().replace(base.encode(), b'http://benchmark.invalid')
                             body_sha = hashlib.sha256(CURSOR.sub(rb'\g<1>CURSOR', decoded)).hexdigest()
-                            if name in run.setdefault('body_sha256', {}) and run['body_sha256'][name] != body_sha:
-                                raise RuntimeError(f'{name}: decoded body differs within a run')
-                            run['body_sha256'][name] = body_sha
+                            # One baseline per route across every arm and run: the lever must not
+                            # move the decoded response, and the check must actually compare arms.
+                            if name in bodies and bodies[name] != body_sha:
+                                raise RuntimeError(f'{name}: decoded body differs from the baseline '
+                                                   f'({bodies[name][:16]}… vs {body_sha[:16]}…, arm {arm["label"]} rep {rep})')
+                            bodies[name] = body_sha
+                            run.setdefault('body_sha256', {})[name] = body_sha
                         run['rss_peak_kib'] = peak[0]
                         run['rss_final_kib'] = rss_kib(proc.pid)
                         run['cpu_seconds'] = round(cpu_seconds(proc.pid), 3)
@@ -280,12 +421,11 @@ def main():
                 effective = GC_POLICY.search(logtext)
                 run['effective_gc_percent'] = int(effective.group(1)) if effective else None
                 run['effective_mem_limit'] = int(effective.group(2)) if effective else None
-                # Aligned attribution: a GC cycle belongs to the timed window containing its own
-                # runtime timestamp, not to the whole log.
+                # Aligned attribution: a cycle belongs to the timed window its own start timestamp
+                # falls in, and to no window otherwise (warmups, setup, gaps).
                 mine = [window for window in windows if window['label'] == arm['label'] and window['rep'] == rep]
                 for window in mine:
-                    lo, hi = window['start'] - started, window['end'] - started
-                    inside = [cycle for cycle in cycles if lo <= cycle['at'] <= hi]
+                    inside = attribute_cycles(cycles, window['start'] - started, window['end'] - started)
                     window['gc_cpu_ms'] = round(sum(cycle['cpu_ms'] for cycle in inside), 3)
                     window['gc_cycles'] = len(inside)
                     window['cpu_us_per_request'] = round(1e6 * window['cpu_seconds'] / max(1, window['requests']), 3)
@@ -296,83 +436,9 @@ def main():
                 runs.append(run)
                 (out / 'raw.json').write_text(json.dumps(dict(windows=windows, runs=runs), indent=2) + '\n')
 
-    def group(label, route, field):
-        return [window[field] for window in windows if window['label'] == label and window['route'] == route]
-
-    def runs_of(label):
-        return [run for run in runs if run['label'] == label]
-
-    baseline = arms[0]['label']
-    legend = ', '.join(f"`{arm['label']}` ({arm['binary'] + '/' if arm['binary'] else ''}GOGC={arm['googc']}"
-                       + (f", limit={arm['gomemlimit']}" if arm['gomemlimit'] else '') + ')' for arm in arms)
-    report = ['# GC arms: aligned-window per-request accounting', '',
-        f"`{metadata['go_commit']}` (checkout dirty: {metadata['go_dirty']}), Go 1.27.1, {platform.node()}. Public front listener, gzip, "
-        f"{args.concurrency} concurrent clients on {args.loadgen_cpus}, server pinned to {args.server_cpus}, "
-        f"{args.warmup:g}s warmup and {args.seconds:g}s timed window per route, {args.reps} repetitions per arm, order "
-        f"rotating cyclically each repetition so every arm occupies every slot. "
-        f"Decoded bodies are equal across every run (normalized for the listener origin and the room page's live cursor). "
-        f"GODEBUG=gctrace=1 in every arm; host load at start: {metadata['load_before']}.", '',
-        f'Arms: {legend}. An arm with the same settings as the baseline and a different label is the host noise floor.', '',
-        'Every CPU and GC per-request figure below is an aligned-window measurement: the process CPU '
-        'delta and the GC-cycle CPU of the timed load-generator window only, divided by that window\'s '
-        'requests. See the correction section at the end.', '',
-        '| Route | Arm | req/s, median [min–max] | CPU µs/req, median [min–max] | GC CPU µs/req, median | GC cycles, median | RSS peak MiB, median [min–max] |',
-        '|---|---:|---:|---:|---:|---:|---:|']
-    for name in READ_ROUTES:
-        for arm in arms:
-            rates = group(arm['label'], name, 'rps')
-            cpu = group(arm['label'], name, 'cpu_us_per_request')
-            gc = group(arm['label'], name, 'gc_cpu_per_request_us')
-            cycles = group(arm['label'], name, 'gc_cycles')
-            rss = [run['rss_peak_kib'] / 1024 for run in runs_of(arm['label'])]
-            report.append(f"| {name} | {arm['label']} | {statistics.median(rates):,.0f} [{min(rates):,.0f}–{max(rates):,.0f}] | "
-                          f"{statistics.median(cpu):.2f} [{min(cpu):.2f}–{max(cpu):.2f}] | "
-                          f"{statistics.median(gc):.3f} | {statistics.median(cycles):.0f} | "
-                          f"{statistics.median(rss):.1f} [{min(rss):.1f}–{max(rss):.1f}] |")
-    report += ['', '## Paired ratios against the baseline (same repetition and route)', '',
-        f'Ratios to the `{baseline}` arm measured in the same repetition and on the same route, and the number of '
-        'pairs that favour the arm. A throughput ratio above 1 (or a CPU µs/req ratio below 1) with nearly every '
-        'pair agreeing is a clear sign; mixed signs mean the host noise is larger than the effect.', '',
-        '| Route | Arm | req/s ratio, median [min–max] | pairs >1 | CPU µs/req ratio, median [min–max] | pairs <1 | GC µs/req ratio, median | pairs <1 |',
-        '|---|---:|---:|---:|---:|---:|---:|---:|']
-    for name in READ_ROUTES:
-        for arm in arms[1:]:
-            def pairs(field):
-                base, other = [], []
-                for rep in range(1, args.reps + 1):
-                    base.append(next((w[field] for w in windows if w['label'] == baseline and w['rep'] == rep and w['route'] == name), None))
-                    other.append(next((w[field] for w in windows if w['label'] == arm['label'] and w['rep'] == rep and w['route'] == name), None))
-                return [o / b for b, o in zip(base, other) if b and o]
-            rate_ratios = pairs('rps')
-            cpu_ratios = pairs('cpu_us_per_request')
-            gc_ratios = pairs('gc_cpu_per_request_us')
-            report.append(f"| {name} | {arm['label']} | {statistics.median(rate_ratios):.3f} [{min(rate_ratios):.3f}–{max(rate_ratios):.3f}] | "
-                          f"{sum(1 for ratio in rate_ratios if ratio > 1)}/{len(rate_ratios)} | "
-                          f"{statistics.median(cpu_ratios):.3f} [{min(cpu_ratios):.3f}–{max(cpu_ratios):.3f}] | "
-                          f"{sum(1 for ratio in cpu_ratios if ratio < 1)}/{len(cpu_ratios)} | "
-                          f"{statistics.median(gc_ratios):.3f} | {sum(1 for ratio in gc_ratios if ratio < 1)}/{len(gc_ratios)} |")
-    report += ['', '## Correction: aligned window vs whole-process CPU / timed requests', '',
-        'The first version of this script divided the whole process\'s CPU time (and the whole log\'s GC CPU) '
-        'by the timed requests only, so the warmup windows and the setup requests were in the numerator and '
-        'not in the denominator. The aligned figure is the one to quote; the whole-run figure is shown to make '
-        'the size of the correction visible. RSS and the GC cycle counts are unaffected.', '',
-        '| Arm | CPU µs/req, aligned | CPU µs/req, whole-run (biased) | bias | GC µs/req, aligned | GC µs/req, whole-run (biased) | bias |',
-        '|---|---:|---:|---:|---:|---:|---:|']
-    for arm in arms:
-        rows = runs_of(arm['label'])
-        aligned = [window['cpu_us_per_request'] for window in windows if window['label'] == arm['label']]
-        aligned_gc = [window['gc_cpu_per_request_us'] for window in windows if window['label'] == arm['label']]
-        whole = statistics.median(run['cpu_us_per_request_whole_run'] for run in rows)
-        whole_gc = statistics.median(run['gc_cpu_per_request_whole_run'] for run in rows)
-        report.append(f"| {arm['label']} | {statistics.median(aligned):.2f} | {whole:.2f} | {whole / statistics.median(aligned):.2f}× | "
-                      f"{statistics.median(aligned_gc):.3f} | {whole_gc:.3f} | {whole_gc / statistics.median(aligned_gc):.2f}× |")
-    report += ['', 'Per-window samples (route, requests, aligned CPU and GC deltas, window bounds), per-run RSS, CPU, '
-               'GC totals and log volumes are in `raw.json`; binary hashes, seed hash and host identity in '
-               '`metadata.json`; the GC and startup lines of each server run in `*.log`. The per-request access log '
-               'is left on (harness fidelity) and only its line and byte counts are kept. This is a workstation '
-               'measurement on a shared host; medians, spread and paired signs are the evidence, not single samples.', '']
-    (out / 'report.md').write_text('\n'.join(report) + '\n')
-    print('\n'.join(report))
+    report = render_report(metadata, arms, windows, runs, metadata['settings'])
+    (out / 'report.md').write_text(report)
+    print(report)
 
 
 if __name__ == '__main__':

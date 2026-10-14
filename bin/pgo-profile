@@ -19,13 +19,20 @@ What this script does, so the profile can be reproduced from a revision:
   4. Sends SIGINT; `front.Serve` returns, the deferred `pprof.StopCPUProfile` flushes the
      profile, and the process exits.
 
-The provenance of a collected profile (revision, seed, load generator, routes, timings, host
-load) is written next to it as `<out>.provenance.json`; commit both. The provenance identifies
-the *binary that was profiled* from its own `go version -m` build info (module, build settings,
-VCS stamp, and the PGO input it was itself built with), records the effective runtime settings
-from the server's startup log (not just the requested environment), and pins a content-addressed
-source identity (`go_sources_sha256`) that does not depend on the checkout's git state. Re-running
-on a quiet host is expected to reproduce the hot-path ranking, not the byte-for-byte file.
+The provenance of a collected profile is written next to it as `<out>.provenance.json`; commit
+both. It identifies the *binary that was profiled* from that binary's own `go version -m` build
+info (module, build settings, VCS stamp) rather than from the checkout, records the effective
+runtime settings from the server's startup log (not just the requested environment), and pins the
+checkout's build inputs by content (`source_identity.go_sources_sha256`) with an explicit
+statement of whether they can stand for the profiled binary — a VCS stamp names a revision and a
+modified flag, not content, so only a clean build of the same revision is a match.
+
+It deliberately does **not** claim the profile the binary was built with: `go version -m` records
+the `-pgo` path and never the profile's content, so the file at that path is reported as
+`pgo_input.candidate_before_run` / `candidate_after_run` with `identity: "path only"`, captured
+before the run writes anything (`candidate_overwritten_by_this_run` says whether this run replaced
+it). To make a profile input provable you would have to record its hash at build time; the binary
+does not carry one.
 """
 import argparse, hashlib, importlib.machinery, importlib.util, json, os, re, shutil, sqlite3, subprocess, sys, tempfile, time
 from pathlib import Path
@@ -78,50 +85,108 @@ def text(*args):
 
 
 MAIN_PACKAGE = ROOT / 'cmd/campfire'
+# This tool's own outputs. They are excluded from the source identity (the profile's identity is
+# profile.sha256) and from the checkout's dirty test, so a collection that is about to rewrite
+# them does not look like a modified source tree.
+OUTPUT_PATHS = {'cmd/campfire/default.pgo', 'cmd/campfire/default.pgo.provenance.json'}
 
 
-def build_info(binary):
-    """What the binary itself says it is: `go version -m` records the module, dependencies,
-    build settings (including `-pgo`), and the VCS stamp of the revision it was built from.
-    Nothing here is read from the checkout, so a binary built elsewhere is identified by its
-    own content."""
-    raw = text('go', 'version', '-m', str(binary))
-    settings, module = {}, None
+def dirty_paths(status_text, excluded=OUTPUT_PATHS):
+    """Tracked-change paths from `git status --porcelain`, without this tool's own outputs."""
+    return [line[3:].strip() for line in status_text.splitlines() if line[3:].strip() not in excluded]
+
+
+def checkout_status():
+    """The checkout's tracked changes that are not this tool's own outputs, as paths."""
+    paths = dirty_paths(text('git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=no'))
+    return {'dirty': bool(paths), 'dirty_paths': paths}
+
+
+def parse_build_info(raw):
+    """Parse `go version -m` output. Records are tab-separated with a leading tab; the first
+    field is the record type, so a record is split consistently after stripping the indentation
+    (`mod` carries the module path, `build` carries one `key=value` build setting)."""
+    settings, module, version = {}, None, None
     for line in raw.splitlines():
-        fields = line.split('\t')
-        if len(fields) >= 2 and fields[0] == 'mod':
-            module = fields[1]
-        elif len(fields) >= 3 and fields[1] == 'build':
-            key, _, value = fields[2].partition('=')
-            settings[key] = value
-    return {'go_version_m': raw, 'module': module, 'build_settings': settings,
+        fields = line.strip().split('\t')
+        if len(fields) < 2:
+            continue
+        kind, value = fields[0], fields[1]
+        if kind == 'mod':
+            module, version = value, (fields[2] if len(fields) > 2 else None)
+        elif kind == 'build':
+            key, _, setting = value.partition('=')
+            settings[key] = setting
+    return {'go_version_m': raw, 'module': module, 'module_version': version,
+            'build_settings': settings,
             'vcs_revision': settings.get('vcs.revision'),
             'vcs_modified': settings.get('vcs.modified') == 'true',
             'vcs_time': settings.get('vcs.time')}
 
 
-def pgo_input(info):
-    """Identity of the profile the binary was built with, from its own `-pgo` setting: the
-    profile path (`auto` resolves to default.pgo in the main package directory) and its hash."""
+def build_info(binary):
+    """What the binary itself says it is: `go version -m` records the module, build settings
+    (including `-pgo`) and the VCS stamp of the revision it was built from. Nothing here is read
+    from the checkout, so a binary built elsewhere is identified by its own content."""
+    return parse_build_info(text('go', 'version', '-m', str(binary)))
+
+
+def pgo_input_candidate(info, main_package=MAIN_PACKAGE):
+    """The file the binary's own `-pgo` setting names, as it stands right now.
+
+    This is a *candidate*, never an identity: `go version -m` records the `-pgo` path and never
+    the profile's content, so nothing in the binary ties this file to its build. Capture it
+    before the profiling run writes anything, or the run's own output would be recorded as if it
+    were the input."""
     setting = info['build_settings'].get('-pgo')
     if not setting or setting in ('off', ''):
-        return None
+        return {'setting': setting or None, 'present': False,
+                'identity': 'none: the binary was built with no PGO input'}
     path = Path(setting)
-    resolved = path if path.is_absolute() else (MAIN_PACKAGE / path).resolve()
+    resolved = path if path.is_absolute() else (main_package / path).resolve()
     if not resolved.is_file():
-        return {'setting': setting, 'resolved': str(resolved), 'present': False}
+        return {'setting': setting, 'resolved': str(resolved), 'present': False,
+                'identity': 'path only: the named profile is not present'}
     return {'setting': setting, 'resolved': str(resolved), 'present': True,
-            'bytes': resolved.stat().st_size, 'sha256': digest(resolved)}
+            'bytes': resolved.stat().st_size, 'mtime': resolved.stat().st_mtime,
+            'sha256': digest(resolved),
+            'identity': 'path only: the binary records the -pgo path, not the profile content, '
+                        'so this file is not proven to be the one it was built with'}
 
 
 def sources_sha256():
-    """A content-addressed source identity for the binary, independent of the checkout's git
-    state: every file that goes into the build, by hash."""
+    """A content-addressed identity for the checkout's build inputs, independent of git state.
+
+    The profile and its provenance are excluded: they are this tool's outputs, and the profile's
+    own identity is recorded as `profile.sha256`. `bin/pgo-profile` is excluded too — it does not
+    go into the build, and pinning it would invalidate the manifest on every edit to this script.
+    It describes *this checkout*, which is the profiled binary's source only when the binary's own
+    VCS stamp matches (see source_identity)."""
     paths = {str(path.relative_to(ROOT)): digest(path)
              for folder in ('cmd', 'internal', 'assets', 'third_party', 'reference/crates/assets')
-             for path in sorted((ROOT / folder).rglob('*')) if path.is_file()}
-    paths.update({name: digest(ROOT / name) for name in ('go.mod', 'go.sum', 'bin/build', 'bin/build-assets', 'bin/pgo-profile')})
+             for path in sorted((ROOT / folder).rglob('*'))
+             if path.is_file() and str(path.relative_to(ROOT)) not in OUTPUT_PATHS}
+    paths.update({name: digest(ROOT / name) for name in ('go.mod', 'go.sum', 'bin/build', 'bin/build-assets')})
     return paths
+
+
+def source_identity(info, revision, dirty, hashes):
+    """Whether the checkout's build-input hashes can stand for the profiled binary.
+
+    A `go version -m` VCS stamp names a revision and whether the tree was modified; it does not
+    pin content. So the hashes describe the binary only for a clean build of the same revision.
+    Anything else is reported as checkout-only, with the reason."""
+    reasons = []
+    if info['vcs_revision'] != revision:
+        reasons.append(f"the binary was built from {info['vcs_revision'] or 'an unknown revision'}, "
+                       f"not this checkout ({revision})")
+    if info['vcs_modified']:
+        reasons.append('the binary was built from a modified tree')
+    if dirty:
+        reasons.append('this checkout has uncommitted changes')
+    return {'status': 'checkout-only: not proven to describe the profiled binary' if reasons
+                      else 'describes the profiled binary (clean build of this revision)',
+            'reasons': reasons, 'go_sources_sha256': hashes}
 
 
 def effective_settings(logtext):
@@ -188,6 +253,10 @@ def main():
         raise SystemExit(f'no binary at {binary}; run bin/build first')
     if not loadgen.is_file():
         raise SystemExit(f'no load generator at {loadgen}')
+    # What the binary says it is, and the file its -pgo setting names, both read BEFORE this run
+    # writes anything: with the default output path the run overwrites exactly that file.
+    info = build_info(binary)
+    pgo_before = pgo_input_candidate(info)
 
     labels = json.loads((seed / 'labels.json').read_text())
     room = labels['rooms.watercooler']
@@ -257,21 +326,29 @@ def main():
         if not out.is_file() or out.stat().st_size == 0:
             raise SystemExit(f'no profile written to {out}; see {log}')
         logtext = log.read_text()
-        info = build_info(binary)
+        revision = text('git', '-C', str(ROOT), 'rev-parse', 'HEAD')
+        status = checkout_status()
+        dirty = status['dirty']
+        pgo_after = pgo_input_candidate(info)
         provenance = {
-            'profile': out.name, 'bytes': out.stat().st_size, 'sha256': digest(out),
-            'collected_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-            # The binary that was profiled, identified by its own build info (never by the checkout):
-            # its VCS stamp, its build settings, and the profile it was itself built with.
+            'profile': {'name': out.name, 'bytes': out.stat().st_size, 'sha256': digest(out),
+                        'collected_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+            # The binary that was profiled, identified by its own build info (never by the checkout).
             'binary': {'path': str(binary), 'sha256': digest(binary), 'bytes': binary.stat().st_size,
                        **info},
-            'binary_pgo_input': pgo_input(info),
+            # The binary records the -pgo path and never the profile's content, so the file at that
+            # path is a candidate, captured before this run wrote anything. A run that uses the
+            # default output path overwrites exactly this file, which is why the capture is taken
+            # first and the result compared afterwards.
+            'pgo_input': {'binary_setting': info['build_settings'].get('-pgo'),
+                          'candidate_before_run': pgo_before,
+                          'candidate_after_run': pgo_after,
+                          'candidate_overwritten_by_this_run': pgo_after != pgo_before},
             'profiler_go_version': text('go', 'version'),
-            # A content-addressed source identity: every file that goes into the build, by hash.
-            # This is what makes the run reproducible regardless of the checkout's git state.
-            'go_sources_sha256': sources_sha256(),
-            'checkout': {'revision': text('git', '-C', str(ROOT), 'rev-parse', 'HEAD'),
-                         'dirty': bool(text('git', '-C', str(ROOT), 'status', '--porcelain', '--untracked-files=no')),
+            # The checkout's build inputs, by content, with an explicit statement of whether they
+            # can stand for the profiled binary.
+            'source_identity': source_identity(info, revision, dirty, sources_sha256()),
+            'checkout': {'revision': revision, 'dirty': dirty, 'dirty_paths': status['dirty_paths'],
                          'diff_sha256': hashlib.sha256(text('git', '-C', str(ROOT), 'diff').encode()).hexdigest(),
                          'branch': text('git', '-C', str(ROOT), 'rev-parse', '--abbrev-ref', 'HEAD')},
             'seed': str(seed), 'seed_sha256': digest(seed / 'db' / 'production.sqlite3'),
@@ -290,7 +367,7 @@ def main():
             'command': 'bin/pgo-profile ' + ' '.join(sys.argv[1:]),
         }
         (out.parent / (out.name + '.provenance.json')).write_text(json.dumps(provenance, indent=2) + '\n')
-        print(f'profile {out} ({provenance["bytes"]} bytes), provenance {out.name}.provenance.json')
+        print(f'profile {out} ({provenance["profile"]["bytes"]} bytes), provenance {out.name}.provenance.json')
 
 
 if __name__ == '__main__':

@@ -25,40 +25,55 @@ Pooled over all four routes and 12 repetitions (48 pairs per arm), against the `
 | `pgo-null` | 1.007 [0.821–1.138] | 18/48 | 0.996 | 18/48 |
 | `nopgo` | 0.995 [0.837–1.195] | 29/48 | 1.011 | 32/48 |
 
-**Result: no detectable difference.** The no-PGO binary's CPU per request ratio is 0.995 — the
-same as the identically configured noise-floor arm's 1.007 — with signs split 29/48 and 18/48
-against a fair 24/48. Throughput is likewise split (32/48 and 18/48). A 1–2% PGO effect would be
-invisible at this sample size on this host; nothing larger is present on this workload.
+**Result: no PGO benefit was detected.** The no-PGO binary's CPU per request ratio is 0.995 —
+the same as the identically configured noise-floor arm's 1.007 — with signs split 29/48 and 18/48
+against a fair 24/48. Throughput is likewise split (32/48 and 18/48). The 48 pairs are 12
+repetitions of 4 routes that share one server process and one host window each, so they are not
+48 independent samples: this establishes "no benefit detected at this sample size", not "no
+benefit exists". A 1–2% effect would be invisible here.
 
 So the shipped build's PGO input is a *mechanism* that is verified to engage (`go version -m`
 reports `build -pgo=default.pgo`) and to leave the decoded response bytes unchanged, not a
-measured speedup. The GC default was therefore decided independently of PGO, on a PGO build of
-the same source.
+measured speedup. The committed profile is a **bootstrap input**: it was collected from a
+`-pgo=off` build of the same revision, so it does not encode the effect of PGO itself. The GC
+default was therefore decided independently of PGO, on a PGO build of the same source.
 
 Generated tables are in [`report.md`](report.md); per-window samples and per-run totals in
 [`raw.json`](raw.json); binary hashes and host identity in [`metadata.json`](metadata.json).
 Host load at the start of the run: 6.2 (1 min), shared host, `GODEBUG=gctrace=1` in every arm,
-per-request access log left on.
+per-request access log left on. The binary hashes above are the ones actually measured; the
+committed profile was regenerated afterwards by a fixed `bin/pgo-profile`, so a rebuild now
+produces a different PGO binary from the same source — this comparison is between a PGO build and
+a no-PGO build, not between two fixed artifacts.
 
 ## Provenance of the committed profile
 
 `cmd/campfire/default.pgo.provenance.json` identifies the binary that produced the profile from
-that binary's own `go version -m` output (`binary.vcs_revision`, `binary.vcs_modified`,
-`binary.build_settings`, `binary.go_version_m`) rather than from the checkout, resolves and hashes
-the PGO input the binary was itself built with (`binary_pgo_input`), records the effective runtime
-settings from the server's startup log (`effective.gc_percent`, `effective.mem_limit`,
-`effective.cpus_allowed`) alongside the requested ones, and pins a content-addressed source
-identity for every file that goes into the build (`go_sources_sha256`, 787 files) plus the
-checkout's revision and diff hash.
+that binary's own `go version -m` output — `binary.vcs_revision`, `binary.vcs_modified`,
+`binary.module`, `binary.build_settings`, `binary.go_version_m` — rather than from the checkout,
+and records the effective runtime settings from the server's startup log
+(`effective.gc_percent`, `effective.mem_limit`, `effective.cpus_allowed`) alongside the requested
+ones.
 
-The identification was checked by profiling a binary built at another revision while the checkout
-was elsewhere: `bin/pgo-profile --binary /tmp/campfire-pgo …` (a build from `36bee91`, checkout at
-`ce7c42f`) reported `binary.vcs_revision = 36bee91…`, `binary.vcs_modified = true` and
-`binary.build_settings["-pgo"] = "default.pgo"` — the binary's stamp, not the checkout's — with
-`binary_pgo_input.sha256` resolving to the profile that binary had been built with.
+What it deliberately does **not** claim is the profile the binary was built with. `go version -m`
+records the `-pgo` path and never the profile's content, so no file can be tied to the binary's
+build from the binary alone. The file at that path is reported as
+`pgo_input.candidate_before_run` / `candidate_after_run` with
+`identity: "path only: … not proven to be the one it was built with"`, and the candidate is read
+**before** the run writes anything, so a run using the default output path cannot record its own
+output as its input (`pgo_input.candidate_overwritten_by_this_run` says whether it replaced the
+file). Checked by building a binary with profile A (`f374b372…`), replacing the file with profile
+B (`1300b8e3…`), and profiling that binary from this checkout: the provenance reports
+`binary_setting = default.pgo`, the candidate's hash as B, the `path only` identity — and never B
+as the build input. The same scenario under the previous version of this script recorded
+`binary_pgo_input.sha256 = 1300b8e3…`, i.e. it named B as the input.
 
-One limitation, by construction: the manifest pins the profile file it just wrote (which matches
-the committed tree) but cannot pin its own output file, so the pinned hash of
-`cmd/campfire/default.pgo.provenance.json` is the previous file's, or absent on the first run.
-Everything else in `go_sources_sha256` matches the tree it was collected from.
+`source_identity` pins the checkout's build inputs by content (`go_sources_sha256`, 784 files —
+the profile and its provenance are excluded as this tool's outputs, and so is `bin/pgo-profile`
+itself, which does not go into the build) and states plainly whether they can stand for the
+profiled binary. A VCS stamp names a revision and a modified flag, not content, so only a clean
+build of the same revision matches; anything else is reported as
+`checkout-only: not proven to describe the profiled binary` with the reasons. The same
+cross-revision check above produced exactly that status, listing the revision mismatch, the
+modified binary and the dirty checkout.
 

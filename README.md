@@ -279,11 +279,15 @@ The build is profile-guided: `cmd/campfire/default.pgo`, collected from the prod
 by `bin/pgo-profile` (the five harness routes through the public front listener), is the PGO
 input for `bin/build` and the image build via `-pgo=auto`; the build falls back to no PGO when
 the file is absent. `cmd/campfire/default.pgo.provenance.json` identifies the binary that was
-profiled from its own `go version -m` build info (revision, build settings, and the profile it
-was itself built with), records the effective runtime settings from the server's startup log, and
-pins a content-addressed source identity. PGO on/off is measured separately; no benefit larger
-than this host's noise was detected on the read workload, so the profile is shipped as the
-lever's mechanism, not as a measured speedup.
+profiled from its own `go version -m` build info (revision, build settings), records the
+effective runtime settings from the server's startup log, and pins the checkout's build inputs by
+content with an explicit statement of whether they can stand for that binary. It does not claim
+the profile the binary was built with: `go version -m` names the `-pgo` path and never the
+profile's content, so the file at that path is reported as an unproven candidate, captured before
+a run can overwrite it. **No PGO benefit was measured**: on/off is compared in
+`bench/results/pgo-on-off/` and no difference was detected at that sample size on this host, and
+the committed profile is a bootstrap input (collected from a `-pgo=off` build of the same
+revision). The profile ships as the lever's mechanism, not as a measured speedup.
 
 The public listener uses `HTTP_PORT=80`. Set `TLS_DOMAIN` for automatic ACME certificates and HTTPS
 on `HTTPS_PORT=443`. The internal application listener defaults to `TARGET_BIND=127.0.0.1` and

@@ -1,10 +1,10 @@
 # GC arms: aligned-window per-request accounting
 
-`ce7c42f0d2b2879fb6e6c64a9e473fef30390c8d` (checkout dirty: True), Go 1.27.1, omarchy. Public front listener, gzip, 16 concurrent clients on 12-15, server pinned to 8-11, 2s warmup and 4s timed window per route, 16 repetitions per arm, order rotating cyclically each repetition so every arm occupies every slot. Decoded bodies are equal across every run (normalized for the listener origin and the room page's live cursor). GODEBUG=gctrace=1 in every arm; host load at start: 1.64 2.79 4.40 6/3516 1130114.
+`ce7c42f0d2b2879fb6e6c64a9e473fef30390c8d` (checkout dirty: True), Go 1.27.1, omarchy. Public front listener, gzip, 16 concurrent clients on 12-15, server pinned to 8-11, 2s warmup and 4s timed window per route, 16 repetitions per arm, order rotating cyclically each repetition so every arm occupies every slot. Decoded bodies are equal across every arm and run (normalized for the listener origin and the room page's live cursor). GODEBUG=gctrace=1 in every arm; host load at start: 1.64 2.79 4.40 6/3516 1130114.
 
-Arms: `100` (GOGC=100), `null` (GOGC=100), `200` (GOGC=200), `200+256MiB` (GOGC=200, limit=256MiB). An arm with the same settings as the baseline and a different label is the host noise floor.
+Arms: `100` (GOGC=100), `null` (GOGC=100), `200` (GOGC=200), `200+256MiB` (GOGC=200, limit=256MiB). An arm with the same settings as the baseline and a different label is the host noise floor. Binaries, with their hashes, are in `metadata.json`.
 
-Every CPU and GC per-request figure below is an aligned-window measurement: the process CPU delta and the GC-cycle CPU of the timed load-generator window only, divided by that window's requests. See the correction section at the end.
+Every CPU and GC per-request figure below is an aligned-window measurement: the process CPU delta and the GC-cycle CPU of the timed load-generator window only, divided by that window's requests. GC attribution is **start-attributed and whole-cycle** — the gctrace `@Ts` field is the cycle's start, not its completion, and windows are half-open `[start, end)` — so a cycle beginning in a warmup counts there even if it finishes inside a window, and one beginning in a window counts there in full even if it finishes after. See the correction section at the end.
 
 | Route | Arm | req/s, median [min–max] | CPU µs/req, median [min–max] | GC CPU µs/req, median | GC cycles, median | RSS peak MiB, median [min–max] |
 |---|---:|---:|---:|---:|---:|---:|
@@ -27,7 +27,7 @@ Every CPU and GC per-request figure below is an aligned-window measurement: the 
 
 ## Paired ratios against the baseline (same repetition and route)
 
-Ratios to the `100` arm measured in the same repetition and on the same route, and the number of pairs that favour the arm. A throughput ratio above 1 (or a CPU µs/req ratio below 1) with nearly every pair agreeing is a clear sign; mixed signs mean the host noise is larger than the effect.
+Ratios to the `100` arm measured in the same repetition and on the same route, and the number of pairs that favour the arm. A throughput ratio above 1 (or a CPU µs/req ratio below 1) with nearly every pair agreeing is a clear sign; mixed signs mean the host noise is larger than the effect. The route pairs of one repetition share a server process and a host window, so they are not independent repetitions: the per-route columns and the pooled row should be read together.
 
 | Route | Arm | req/s ratio, median [min–max] | pairs >1 | CPU µs/req ratio, median [min–max] | pairs <1 | GC µs/req ratio, median | pairs <1 |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -44,6 +44,14 @@ Ratios to the `100` arm measured in the same repetition and on the same route, a
 | search | 200 | 1.052 [0.516–2.344] | 14/16 | 0.957 [0.786–1.137] | 14/16 | 0.519 | 15/16 |
 | search | 200+256MiB | 1.050 [0.976–2.348] | 15/16 | 0.963 [0.784–1.037] | 15/16 | 0.518 | 16/16 |
 
+Pooled over all routes and repetitions (all pairs, not independent):
+
+| Arm | req/s ratio, median [min–max] | pairs >1 | CPU µs/req ratio, median [min–max] | pairs <1 | GC µs/req ratio, median [min–max] | pairs <1 |
+|---|---:|---:|---:|---:|---:|---:|
+| null | 1.001 [0.549–2.254] | 34/64 | 1.001 [0.812–1.197] | 31/64 | 0.996 [0.317–2.563] | 34/64 |
+| 200 | 1.056 [0.516–2.447] | 57/64 | 0.957 [0.761–1.137] | 57/64 | 0.516 [0.166–1.474] | 60/64 |
+| 200+256MiB | 1.061 [0.919–2.416] | 59/64 | 0.955 [0.775–1.108] | 59/64 | 0.512 [0.160–0.617] | 64/64 |
+
 ## Correction: aligned window vs whole-process CPU / timed requests
 
 The first version of this script divided the whole process's CPU time (and the whole log's GC CPU) by the timed requests only, so the warmup windows and the setup requests were in the numerator and not in the denominator. The aligned figure is the one to quote; the whole-run figure is shown to make the size of the correction visible. RSS and the GC cycle counts are unaffected.
@@ -55,5 +63,5 @@ The first version of this script divided the whole process's CPU time (and the w
 | 200 | 22.66 | 32.25 | 1.42× | 0.842 | 1.252 | 1.49× |
 | 200+256MiB | 22.68 | 32.29 | 1.42× | 0.847 | 1.240 | 1.46× |
 
-Per-window samples (route, requests, aligned CPU and GC deltas, window bounds), per-run RSS, CPU, GC totals and log volumes are in `raw.json`; binary hashes, seed hash and host identity in `metadata.json`; the GC and startup lines of each server run in `*.log`. The per-request access log is left on (harness fidelity) and only its line and byte counts are kept. This is a workstation measurement on a shared host; medians, spread and paired signs are the evidence, not single samples.
+Per-window samples (route, requests, aligned CPU and GC deltas, window bounds), per-run RSS, CPU, GC totals, decoded body hashes and log volumes are in `raw.json`; binary hashes, seed hash and host identity in `metadata.json`; the GC and startup lines of each server run in `*.log`. The per-request access log is left on (harness fidelity) and only its line and byte counts are kept. This is a workstation measurement on a shared host; medians, spread and paired signs are the evidence, not single samples.
 
