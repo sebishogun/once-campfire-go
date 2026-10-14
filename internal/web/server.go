@@ -1252,11 +1252,13 @@ func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User
 				state := browserState(r)
 				state.load()
 				if state.values["flash"] == nil {
-					var pageKeyBuf [256]byte
-					pageKey := appendSidebarPageKey(pageKeyBuf[:0], version, generation, u, r.Header.Get("Turbo-Frame") != "")
-					if entry, ok := s.sidebarPages.get(pageKey); ok {
-						s.serveSidebarPage(w, r, entry)
-						return
+					if _, ok := sidebarPageKeySize(version, generation, u, r.Header.Get("Turbo-Frame") != ""); ok {
+						var pageKeyBuf [maxSidebarPageKeySize]byte
+						pageKey := appendSidebarPageKey(pageKeyBuf[:0], version, generation, u, r.Header.Get("Turbo-Frame") != "")
+						if entry, ok := s.sidebarPages.get(pageKey); ok {
+							s.serveSidebarPage(w, r, entry)
+							return
+						}
 					}
 				}
 				s.render(w, r, "sidebar", 200, page{User: u, SidebarHTML: frame, gateVersion: version, gateGeneration: generation})

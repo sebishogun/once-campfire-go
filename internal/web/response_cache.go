@@ -194,15 +194,72 @@ func (s *Server) responseHit(r *http.Request) *cachedResponse {
 	// The key is built into a stack buffer and hashed in place: the map key is
 	// the digest, and a hit is confirmed against the entry's stored key bytes.
 	// A lookup therefore allocates nothing; only an admission copies the key.
-	var buf [1536]byte
-	key := appendResponseCacheKey(buf[:0], info, r, round, version)
-	if len(key) > 8192 {
+	// A shape outside the zero-allocation envelope (a key longer than the
+	// stack buffer, or more form keys than the stack array holds) is bypassed
+	// here, before the builder can grow a slice; round.keyed stays false so the
+	// store is skipped too.
+	if _, ok := responseKeySize(info, r, round, version); !ok {
 		return nil
 	}
+	var buf [responseKeyBufSize]byte
+	key := appendResponseCacheKey(buf[:0], info, r, round, version)
 	round.keyed = true
 	entry := s.responses.get(sha256.Sum256(key), key, version)
 	round.hit = entry != nil
 	return entry
+}
+
+// responseKeyBufSize is the stack buffer the whole-response key is built into
+// and maxResponseFormKeys is the stack array that holds the sorted form keys.
+// Both bound the zero-allocation envelope: a request whose key would exceed
+// either is rejected by responseKeySize before the builder runs, so no append
+// grows a slice and no form key spills to the heap. The cache paths consult
+// the preflight; appendResponseCacheKey itself stays correct for any input
+// (its overflow branch allocates) so a future caller that skips the preflight
+// still gets an injective key.
+const (
+	responseKeyBufSize  = 1536
+	maxResponseFormKeys = 16
+)
+
+// responseKeySize computes the exact byte length appendResponseCacheKey would
+// append, without building the key, and reports whether that length fits the
+// stack buffer and the form-key cap. It mirrors the builder's length-prefixed
+// encoding; TestResponseCacheKeyEnvelope pins the two against each other.
+func responseKeySize(info *requestInfo, r *http.Request, round *responseRound, version uint64) (int, bool) {
+	if len(r.Form) > maxResponseFormKeys {
+		return 0, false
+	}
+	var num [20]byte
+	digits := func(v int64) int { return len(strconv.AppendInt(num[:0], v, 10)) }
+	udigits := func(v uint64) int { return len(strconv.AppendUint(num[:0], v, 10)) }
+	field := func(value string) int { return digits(int64(len(value))) + len(value) + 2 }
+	size := field(info.host) + field(info.origin) + field(r.RequestURI)
+	if r.RequestURI == "" {
+		size += field(r.URL.EscapedPath()) + field(r.URL.RawQuery)
+	}
+	for key, values := range r.Form {
+		for _, value := range values {
+			size += 1 + field(key) + field(value)
+		}
+	}
+	size += digits(round.user) + 1
+	for _, header := range [3]string{"Cookie", "Accept", "Turbo-Frame"} {
+		values := r.Header.Values(header)
+		size += digits(int64(len(values))) + 1
+		for _, value := range values {
+			size += field(value)
+		}
+	}
+	size += field(r.UserAgent()) + field(r.Header.Get("Origin")) + field(r.Header.Get("X-Requested-With"))
+	if round.gzip {
+		size += len("gzip|")
+	} else {
+		size += len("idn|")
+	}
+	size += field(os.Getenv("GIT_REVISION"))
+	size += udigits(version)
+	return size, size <= responseKeyBufSize
 }
 
 // appendResponseCacheKey appends the length-prefixed cache key to b and
@@ -210,7 +267,10 @@ func (s *Server) responseHit(r *http.Request) *cachedResponse {
 // different inputs. It replaces the original json.Marshal (which spent ~5% of
 // a warm room route's samples) and then the string-returning builder (which
 // allocated once per request); the caller hashes the returned bytes into a
-// [32]byte map key, so the per-request path allocates nothing.
+// [32]byte map key. Building and hashing the key allocates nothing for the
+// shapes responseKeySize admits; the hit path separately allocates the header
+// value slices it copies onto the live writer (serveCached), which is not part
+// of this envelope.
 func appendResponseCacheKey(b []byte, info *requestInfo, r *http.Request, round *responseRound, version uint64) []byte {
 	field := func(value string) {
 		b = strconv.AppendInt(b, int64(len(value)), 10)
@@ -232,11 +292,14 @@ func appendResponseCacheKey(b []byte, info *requestInfo, r *http.Request, round 
 	}
 	if len(r.Form) > 0 {
 		// The form is written in sorted key order so the key is independent of
-		// map iteration order. The keys are sorted in a stack array; only a
-		// form with more than 16 distinct keys (never an admitted GET) falls
-		// back to a heap slice. sort.Strings would force the stack array
-		// through an interface and escape, so the insertion sort is inline.
-		var fixed [16]string
+		// map iteration order. The keys are sorted in a stack array. The cache
+		// paths cap the form at maxResponseFormKeys distinct keys
+		// (responseKeySize), so the stack array always holds them and no heap
+		// key slice is built; sort.Strings would force the stack array through
+		// an interface and escape, so the insertion sort is inline. The
+		// overflow branch below is a correctness fallback for a caller that
+		// skips the preflight — it allocates.
+		var fixed [maxResponseFormKeys]string
 		n := 0
 		overflow := false
 		for key := range r.Form {
@@ -301,11 +364,13 @@ func appendResponseCacheKey(b []byte, info *requestInfo, r *http.Request, round 
 
 // serveCached writes a cache hit: the stored entity headers onto the live
 // writer, then the stored wire body through the response buffer's parts
-// channel (no copy; finish computes Content-Length from the part and answers
-// conditional requests against the stored validator exactly like the map
-// path). A framed request skipped the fixed security headers in ServeHTTP;
-// they are restored here so the hit head is byte-identical to the fresh
-// response's.
+// channel (no body copy; finish computes Content-Length from the part and
+// answers conditional requests against the stored validator exactly like the
+// map path). Restoring the header map copies each stored value slice, so a hit
+// allocates once per header value — the zero-allocation envelope covers key
+// construction and lookup, not the response. A framed request skipped the
+// fixed security headers in ServeHTTP; they are restored here so the hit head
+// is byte-identical to the fresh response's.
 func (s *Server) serveCached(entry *cachedResponse, w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	for key, values := range entry.header {
@@ -379,10 +444,16 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 	}
 	// The key is rebuilt into a stack buffer (the same bytes responseHit
 	// hashed) so the entry can keep the exact key without a per-request copy;
-	// only the admission clones it.
-	var keyBuf [1536]byte
+	// only the admission clones it. round.keyed is only set when responseHit's
+	// preflight admitted the shape, so the builder cannot grow the buffer here;
+	// the preflight is repeated for a caller that reaches cacheResponse without
+	// responseHit.
+	if _, ok := responseKeySize(info, r, round, round.version); !ok {
+		return
+	}
+	var keyBuf [responseKeyBufSize]byte
 	key := appendResponseCacheKey(keyBuf[:0], info, r, round, round.version)
-	if len(key) > 8192 || len(wire) == 0 || len(wire)+len(key)+1024 > s.responses.limit/8 {
+	if len(wire) == 0 || len(wire)+len(key)+1024 > s.responses.limit/8 {
 		return
 	}
 	header := make(http.Header)

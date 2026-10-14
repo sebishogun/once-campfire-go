@@ -106,6 +106,26 @@ func (w *responseBuffer) finish(r *http.Request) {
 	if w.status == 0 {
 		w.status = 200
 	}
+	// The precomposed path emits the recorded head and body directly to the
+	// owned writer; every header is already in the head block, so the map
+	// work below is skipped wholesale. The receiver prepends the status line,
+	// Date and the close decision. The receiver can only be missing if the
+	// chain changed between writeRecordedPieces and finish, which nothing
+	// does, in which case the response falls back to the map path.
+	precomposedEmit := w.precomposed && len(w.recordedHead) > 0
+	var target precomposedReceiver
+	if precomposedEmit {
+		target = findPrecomposedReceiver(w.ResponseWriter)
+	}
+	// The map path's entity validators and cache policy are finalized BEFORE
+	// the response cache admits. An admitted entry must carry the same ETag
+	// and Cache-Control the live response emits, because a hit serves the
+	// stored body through parts and leaves w.body empty — so the body-derived
+	// fallback validator can never be recomputed on a hit. The recorded paths
+	// set their own validator before finish and are skipped here.
+	if target == nil {
+		w.finalizeEntity()
+	}
 	// The completed-response cache stores the wire body before emission, so
 	// the store sees exactly the bytes (and the final header state) the
 	// request is about to receive — on the framed path and the map path
@@ -115,46 +135,25 @@ func (w *responseBuffer) finish(r *http.Request) {
 	if w.server != nil {
 		w.server.cacheResponse(r, w)
 	}
-	// The precomposed path emits the recorded head and body directly to the
-	// owned writer; every header is already in the head block, so the map
-	// work below is skipped wholesale. Ordering matches the map path: the
-	// 304 check first, then the head, then the body.
 	// The precomposed path's freshness was decided in writeRecordedPieces
 	// (same validator, same request); the 304 was deferred to this emission,
-	// and a 200 frame carries its body. The receiver prepends the status
-	// line, Date and the close decision.
-	if w.precomposed && len(w.recordedHead) > 0 {
-		if target := findPrecomposedReceiver(w.ResponseWriter); target != nil {
-			var body [][]byte
-			if len(w.encoded) > 0 {
-				body = w.partsBuf[:0]
-				body = append(body, w.encoded)
-			} else {
-				body = w.parts
-			}
-			_ = target.WritePrecomposed(w.recordedStatus, w.recordedHead, body)
-			// A write error means the connection is gone; writing anything
-			// further (the map path would re-negotiate encoding over bytes
-			// that are already encoded) can only corrupt the moot response.
-			// The receiver can only be missing if the chain changed between
-			// writeRecordedPieces and finish, which nothing does.
-			return
+	// and a 200 frame carries its body. Ordering matches the map path: the
+	// 304 check first, then the head, then the body.
+	if target != nil {
+		var body [][]byte
+		if len(w.encoded) > 0 {
+			body = w.partsBuf[:0]
+			body = append(body, w.encoded)
+		} else {
+			body = w.parts
 		}
+		_ = target.WritePrecomposed(w.recordedStatus, w.recordedHead, body)
+		// A write error means the connection is gone; writing anything
+		// further (the map path would re-negotiate encoding over bytes that
+		// are already encoded) can only corrupt the moot response.
+		return
 	}
 	h := w.Header()
-	digested := false
-	if !w.exception && (w.status == 200 || w.status == 201) && w.body.Len() > 0 && h.Get("ETag") == "" && h.Get("Last-Modified") == "" {
-		hash := sha256.Sum256(w.body.Bytes())
-		h.Set("ETag", fmt.Sprintf("W/\"%x\"", hash[:16]))
-		digested = true
-	}
-	if !w.exception && h.Get("Cache-Control") == "" {
-		value := "no-cache"
-		if digested {
-			value = "max-age=0, private, must-revalidate"
-		}
-		h.Set("Cache-Control", value)
-	}
 	if w.status == 200 {
 		// http.ParseTime allocates on every call, including the empty value
 		// most recorded responses carry, so parse only a present header.
@@ -186,6 +185,12 @@ func (w *responseBuffer) finish(r *http.Request) {
 				size += len(part)
 			}
 			h.Set("Content-Length", string(strconv.AppendInt(length[:0], int64(size), 10)))
+		case w.body.Len() > 0:
+			// The map path's own body. Setting it explicitly (rather than
+			// leaving Go's server to infer it) keeps a fresh map-path response
+			// framed identically to a response-cache hit, which serves the same
+			// bytes through parts, and gives a HEAD response the GET length.
+			h.Set("Content-Length", string(strconv.AppendInt(length[:0], int64(w.body.Len()), 10)))
 		}
 	}
 	w.ResponseWriter.WriteHeader(w.status)
@@ -199,5 +204,28 @@ func (w *responseBuffer) finish(r *http.Request) {
 		} else {
 			w.ResponseWriter.Write(w.body.Bytes())
 		}
+	}
+}
+
+// finalizeEntity sets the map path's fallback validator and cache policy — the
+// values the response emits — so the whole-response cache stores them and a
+// hit can restore them without recomputing anything. It is a no-op when the
+// response already carries a validator (the recorded paths set one) or when
+// there is no body to digest (a 204, a 304, or a cache hit whose body lives in
+// parts and whose stored headers already carry the validator).
+func (w *responseBuffer) finalizeEntity() {
+	h := w.Header()
+	digested := false
+	if !w.exception && (w.status == 200 || w.status == 201) && w.body.Len() > 0 && h.Get("ETag") == "" && h.Get("Last-Modified") == "" {
+		hash := sha256.Sum256(w.body.Bytes())
+		h.Set("ETag", fmt.Sprintf("W/\"%x\"", hash[:16]))
+		digested = true
+	}
+	if !w.exception && h.Get("Cache-Control") == "" {
+		value := "no-cache"
+		if digested {
+			value = "max-age=0, private, must-revalidate"
+		}
+		h.Set("Cache-Control", value)
 	}
 }

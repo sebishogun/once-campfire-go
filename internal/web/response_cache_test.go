@@ -335,3 +335,153 @@ func recordedFetchWithExtra(t *testing.T, client *http.Client, server *httptest.
 		body:          body,
 	}
 }
+
+// testResponseCachePair builds two Server instances over one database — the
+// whole-response cache on (the default budget) and off (a zero budget) — so
+// the same request can be compared byte for byte and the on-side hit counter
+// can prove engagement. The frozen clock keeps the render deterministic.
+func testResponseCachePair(t *testing.T) (*Server, *Server, *httptest.Server, *httptest.Server, *http.Cookie, database.User) {
+	t.Helper()
+	t.Setenv("CAMPFIRE_FROZEN_TIME", "2026-01-02T03:04:05Z")
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "test.sqlite3")
+	db, err := database.Open(dbPath, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	secrets, err := rails.NewSecrets("response-cache-pair")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAMPFIRE_RESPONSE_CACHE_MB", "")
+	on, err := New(db, secrets, false, dbPath, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(on.Close)
+	t.Setenv("CAMPFIRE_RESPONSE_CACHE_MB", "0")
+	off, err := New(db, secrets, false, dbPath, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(off.Close)
+	t.Setenv("CAMPFIRE_RESPONSE_CACHE_MB", "")
+	onServer := httptest.NewServer(front.Deflate(on))
+	t.Cleanup(onServer.Close)
+	offServer := httptest.NewServer(front.Deflate(off))
+	t.Cleanup(offServer.Close)
+	user, err := db.Setup(context.Background(), "Owner", "owner@test", "digest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return on, off, onServer, offServer, newSessionCookie(t, secrets, db, user.ID), user
+}
+
+// compareEntityExchange requires the cache-on and cache-off exchanges to be
+// byte-identical, including the entity validator and cache policy.
+func compareEntityExchange(t *testing.T, label string, on, off recordedExchange) {
+	t.Helper()
+	if on.status != off.status {
+		t.Fatalf("%s: status %d != %d", label, on.status, off.status)
+	}
+	if !bytes.Equal(on.body, off.body) {
+		t.Fatalf("%s: bodies differ (%d vs %d bytes)", label, len(on.body), len(off.body))
+	}
+	if on.etag != off.etag {
+		t.Fatalf("%s: ETag %q != %q", label, on.etag, off.etag)
+	}
+	if on.cacheControl != off.cacheControl {
+		t.Fatalf("%s: Cache-Control %q != %q", label, on.cacheControl, off.cacheControl)
+	}
+	if on.encoding != off.encoding {
+		t.Fatalf("%s: encoding %q != %q", label, on.encoding, off.encoding)
+	}
+	if on.contentType != off.contentType {
+		t.Fatalf("%s: content type %q != %q", label, on.contentType, off.contentType)
+	}
+	if on.contentLength != off.contentLength {
+		t.Fatalf("%s: content length %q != %q", label, on.contentLength, off.contentLength)
+	}
+}
+
+// TestResponseCacheEmptySearchValidators pins the empty-result search shape:
+// the recorded piece path does not run (no matching messages), so the ETag and
+// Cache-Control come from finish's body fallback. Admission must see those
+// finalized values, and a warm hit must reproduce them — bytes, validator and
+// policy — and answer a conditional request with 304. Every case asserts cache
+// engagement, so a request that never touches the round cannot pass.
+func TestResponseCacheEmptySearchValidators(t *testing.T) {
+	on, _, onServer, offServer, cookie, _ := testResponseCachePair(t)
+	client := recordedClient()
+	defer client.CloseIdleConnections()
+	const path = "/searches?q=no-such-term-at-all"
+
+	for _, c := range []struct {
+		label, accept string
+		engages       bool
+	}{
+		{"identity", "identity", true},
+		// A non-recorded gzip body is written identity and coded by the front
+		// layer, so the store gate (the stored coding must be the one the key
+		// names) refuses it: the case pins parity and non-engagement.
+		{"gzip", "gzip", false},
+	} {
+		t.Run(c.label, func(t *testing.T) {
+			hits0, _ := on.responses.counters()
+			fillOn := recordedGet(t, client, onServer, path, c.accept, "", cookie)
+			fillOff := recordedGet(t, client, offServer, path, c.accept, "", cookie)
+			if fillOn.status != 200 || fillOff.status != 200 {
+				t.Fatalf("fill: on %d off %d", fillOn.status, fillOff.status)
+			}
+			compareEntityExchange(t, "fill", fillOn, fillOff)
+			if fillOn.etag == "" || fillOn.cacheControl != "max-age=0, private, must-revalidate" {
+				t.Fatalf("fill validator %q cache-control %q", fillOn.etag, fillOn.cacheControl)
+			}
+			// Warm: the on server must serve the stored page with the same
+			// validator, policy and bytes as the fill.
+			warmOn := recordedGet(t, client, onServer, path, c.accept, "", cookie)
+			warmOff := recordedGet(t, client, offServer, path, c.accept, "", cookie)
+			compareEntityExchange(t, "warm", warmOn, warmOff)
+			if !bytes.Equal(warmOn.body, fillOn.body) {
+				t.Fatalf("warm body differs from the fill (%d vs %d bytes)", len(warmOn.body), len(fillOn.body))
+			}
+			if warmOn.etag != fillOn.etag || warmOn.cacheControl != fillOn.cacheControl {
+				t.Fatalf("warm validators differ: ETag %q vs %q, Cache-Control %q vs %q", warmOn.etag, fillOn.etag, warmOn.cacheControl, fillOn.cacheControl)
+			}
+			// A conditional request against the fill validator must 304.
+			condOn := recordedGet(t, client, onServer, path, c.accept, fillOn.etag, cookie)
+			condOff := recordedGet(t, client, offServer, path, c.accept, fillOff.etag, cookie)
+			if condOn.status != http.StatusNotModified || condOff.status != http.StatusNotModified {
+				t.Fatalf("conditional: on %d off %d", condOn.status, condOff.status)
+			}
+			if len(condOn.body) != 0 || len(condOff.body) != 0 {
+				t.Fatalf("conditional body: on %d off %d bytes", len(condOn.body), len(condOff.body))
+			}
+			// HEAD reports the GET body length with the same validator and no
+			// body.
+			headOn := recordedHead(t, client, onServer, path, c.accept, cookie)
+			headOff := recordedHead(t, client, offServer, path, c.accept, cookie)
+			if headOn.status != 200 || headOff.status != 200 {
+				t.Fatalf("head: on %d off %d", headOn.status, headOff.status)
+			}
+			if headOn.contentLength != headOff.contentLength || headOn.contentLength != fillOn.contentLength {
+				t.Fatalf("head content-length: on %q off %q fill %q", headOn.contentLength, headOff.contentLength, fillOn.contentLength)
+			}
+			if headOn.etag != headOff.etag || headOn.cacheControl != headOff.cacheControl {
+				t.Fatalf("head validators: on %q/%q off %q/%q", headOn.etag, headOn.cacheControl, headOff.etag, headOff.cacheControl)
+			}
+			if len(headOn.body) != 0 || len(headOff.body) != 0 {
+				t.Fatalf("head body: on %d off %d bytes", len(headOn.body), len(headOff.body))
+			}
+			hits1, misses1 := on.responses.counters()
+			if c.engages {
+				if hits1 <= hits0 {
+					t.Fatalf("warm %s request did not hit the response cache (hits %d -> %d, misses %d)", c.label, hits0, hits1, misses1)
+				}
+			} else if hits1 != hits0 {
+				t.Fatalf("non-engaging %s request moved the hit counter (%d -> %d)", c.label, hits0, hits1)
+			}
+		})
+	}
+}

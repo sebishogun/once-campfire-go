@@ -60,6 +60,25 @@ func newSidebarPageCache(limit int) *sidebarPageCache {
 	return &sidebarPageCache{limit: limit, entries: make(map[[32]byte]*list.Element)}
 }
 
+// maxSidebarPageKeySize bounds the stack buffer the sidebar page key is built
+// into. A user name long enough to exceed it is bypassed by
+// sidebarPageKeySize before the builder runs, so no append grows the buffer.
+const maxSidebarPageKeySize = 256
+
+// sidebarPageKeySize computes the exact byte length appendSidebarPageKey would
+// append and reports whether it fits the stack buffer. It mirrors the
+// builder's encoding; TestSidebarPageKeyEnvelope pins the two together.
+func sidebarPageKeySize(version, generation uint64, u database.User, frame bool) (int, bool) {
+	var num [20]byte
+	digits := func(v int64) int { return len(strconv.AppendInt(num[:0], v, 10)) }
+	udigits := func(v uint64) int { return len(strconv.AppendUint(num[:0], v, 10)) }
+	size := len("sidebar-page/") + udigits(version) + 1 + udigits(generation) + 1 + digits(u.ID) + 1 + digits(u.UpdatedAt.UnixMicro()) + 1 + digits(int64(len(u.Name))) + 1 + len(u.Name) + 1 + digits(int64(u.Role))
+	if frame {
+		size += len("/frame")
+	}
+	return size, size <= maxSidebarPageKeySize
+}
+
 // appendSidebarPageKey appends the exact key bytes for one user's whole
 // sidebar page at one gate version to b. The frame mode is part of the key: a
 // Turbo-Frame GET renders the frame-only shell (layout-start's .Frame branch),
@@ -71,7 +90,8 @@ func newSidebarPageCache(limit int) *sidebarPageCache {
 // and the read cache carries the same version-only limit for un-audited
 // account SQL. Every string component is length-prefixed so the encoding is
 // injective. The caller hashes the returned bytes into a [32]byte map key and
-// keeps them for exact verification, so the lookup path allocates nothing.
+// keeps them for exact verification; building the key allocates nothing for
+// the names sidebarPageKeySize admits, and only an admission copies it.
 func appendSidebarPageKey(b []byte, version, generation uint64, u database.User, frame bool) []byte {
 	b = append(b, "sidebar-page/"...)
 	b = strconv.AppendUint(b, version, 10)
@@ -139,7 +159,11 @@ func (c *sidebarPageCache) put(entry sidebarPageEntry) {
 // and the same bytes then serve every request until the next sidebar-visible
 // write. body aliases the render buffer, so the entry copies what it keeps.
 func (s *Server) storeSidebarPage(p page, body []byte) {
-	var keyBuf [256]byte
+	if _, ok := sidebarPageKeySize(p.gateVersion, p.gateGeneration, p.User, p.Frame); !ok {
+		// A name too long for the stack buffer is not stored rather than grown.
+		return
+	}
+	var keyBuf [maxSidebarPageKeySize]byte
 	key := appendSidebarPageKey(keyBuf[:0], p.gateVersion, p.gateGeneration, p.User, p.Frame)
 	var compressed bytes.Buffer
 	writer, _ := gzip.NewWriterLevel(&compressed, 6)
