@@ -1,9 +1,10 @@
 # csqlite
 
 Minimal direct-SQLite binding used by `internal/fastdb`. It provides only the
-C API calls the read layer needs: `sqlite3_open_v2`, `prepare_v2`, `bind_*`,
-`step`, `column_*`, `reset`, `clear_bindings`, `finalize` and `busy_timeout`,
-plus two fused helpers that perform a whole observation in one cgo transition:
+C API calls the read and write layers need: `sqlite3_open_v2`, `prepare_v2`,
+`bind_*`, `step`, `column_*`, `reset`, `clear_bindings`, `finalize` and
+`busy_timeout`, plus three fused helpers that perform a whole observation or
+write sequence in one cgo transition:
 
 - `Stmt.DataVersion` — step, column read and reset for `PRAGMA data_version`,
   the generation gate's per-request observation (three transitions per read
@@ -13,6 +14,10 @@ plus two fused helpers that perform a whole observation in one cgo transition:
   The auth fast path's ten-column join read costs four transitions per warm
   request (`clear_bindings`, `bind_text`, `step_row`, the release reset)
   instead of one per column access.
+- `Stmt.ExecTyped` — `fastdb_write_run`: typed binds, step,
+  last-insert-rowid capture and reset for one write statement (the message and
+  rich-text INSERTs and their siblings), one transition instead of one per
+  bind/step/reset.
 
 The capture order per column is the one the live accessors use — type, then the
 integer, then bytes followed by text — so a captured cell reports exactly what
@@ -59,4 +64,10 @@ declarations.
   object holds SQLite memory. `CellBytes` exposes the same
   valid-until-`Step`/`Reset` view as `ColumnBytes`, and the fastdb decode copies
   or decodes it before the statement is reset.
+- `ExecTyped` binds its text arguments through the same `SQLITE_TRANSIENT`
+  helper, so SQLite copies them during the call; `runtime.KeepAlive` pins each
+  string across it. Its `fastdb_write_run` reads `sqlite3_last_insert_rowid`
+  (an integer, not a row buffer) after the step and before the reset, and
+  returns without resetting on a bind or step failure so the caller can map
+  `sqlite3_errmsg` while it is still current.
 - No Go pointer is stored in C memory at any point.

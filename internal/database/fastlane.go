@@ -100,28 +100,9 @@ func (t *fastLaneTx) InsertMessage(ctx context.Context, client string, user, roo
 	if err != nil {
 		return 0, err
 	}
-	defer s.Reset()
-	if err := s.BindText(1, client); err != nil {
-		return 0, err
-	}
-	if err := s.BindInt64(2, user); err != nil {
-		return 0, err
-	}
-	if err := s.BindInt64(3, room); err != nil {
-		return 0, err
-	}
-	if err := s.BindText(4, stamp); err != nil {
-		return 0, err
-	}
-	if err := s.BindText(5, stamp); err != nil {
-		return 0, err
-	}
-	if row, err := s.Step(); err != nil {
-		return 0, err
-	} else if row {
-		return 0, errors.New("fastdb write: INSERT returned a row")
-	}
-	return t.tx.LastInsertID(), nil
+	// One cgo transition: binds, step, last-insert-id and reset fused
+	// (write.WriteStmt.ExecInsertMessage).
+	return s.ExecInsertMessage(client, user, room, stamp)
 }
 
 func (t *fastLaneTx) TouchRoom(ctx context.Context, room int64, stamp string) error {
@@ -132,19 +113,7 @@ func (t *fastLaneTx) TouchRoom(ctx context.Context, room int64, stamp string) er
 	if err != nil {
 		return err
 	}
-	defer s.Reset()
-	if err := s.BindText(1, stamp); err != nil {
-		return err
-	}
-	if err := s.BindInt64(2, room); err != nil {
-		return err
-	}
-	if row, err := s.Step(); err != nil {
-		return err
-	} else if row {
-		return errors.New("fastdb write: UPDATE returned a row")
-	}
-	return nil
+	return s.ExecTouchRoom(room, stamp)
 }
 
 func (t *fastLaneTx) InsertRichText(ctx context.Context, id int64, body, stamp string) error {
@@ -155,25 +124,7 @@ func (t *fastLaneTx) InsertRichText(ctx context.Context, id int64, body, stamp s
 	if err != nil {
 		return err
 	}
-	defer s.Reset()
-	if err := s.BindInt64(1, id); err != nil {
-		return err
-	}
-	if err := s.BindText(2, body); err != nil {
-		return err
-	}
-	if err := s.BindText(3, stamp); err != nil {
-		return err
-	}
-	if err := s.BindText(4, stamp); err != nil {
-		return err
-	}
-	if row, err := s.Step(); err != nil {
-		return err
-	} else if row {
-		return errors.New("fastdb write: INSERT returned a row")
-	}
-	return nil
+	return s.ExecInsertRichText(id, body, stamp)
 }
 
 func (t *fastLaneTx) InsertAttachment(ctx context.Context, blob, id int64, stamp string) error {
@@ -184,22 +135,7 @@ func (t *fastLaneTx) InsertAttachment(ctx context.Context, blob, id int64, stamp
 	if err != nil {
 		return err
 	}
-	defer s.Reset()
-	if err := s.BindInt64(1, blob); err != nil {
-		return err
-	}
-	if err := s.BindInt64(2, id); err != nil {
-		return err
-	}
-	if err := s.BindText(3, stamp); err != nil {
-		return err
-	}
-	if row, err := s.Step(); err != nil {
-		return err
-	} else if row {
-		return errors.New("fastdb write: INSERT returned a row")
-	}
-	return nil
+	return s.ExecInsertAttachment(blob, id, stamp)
 }
 
 func (t *fastLaneTx) InsertSearchIndex(ctx context.Context, id int64, plain string) error {
@@ -210,19 +146,7 @@ func (t *fastLaneTx) InsertSearchIndex(ctx context.Context, id int64, plain stri
 	if err != nil {
 		return err
 	}
-	defer s.Reset()
-	if err := s.BindInt64(1, id); err != nil {
-		return err
-	}
-	if err := s.BindText(2, plain); err != nil {
-		return err
-	}
-	if row, err := s.Step(); err != nil {
-		return err
-	} else if row {
-		return errors.New("fastdb write: INSERT returned a row")
-	}
-	return nil
+	return s.ExecInsertSearchIndex(id, plain)
 }
 
 func (t *fastLaneTx) BumpUnread(ctx context.Context, room, user int64, stamp, cutoff string) error {
@@ -233,28 +157,7 @@ func (t *fastLaneTx) BumpUnread(ctx context.Context, room, user int64, stamp, cu
 	if err != nil {
 		return err
 	}
-	defer s.Reset()
-	if err := s.BindText(1, stamp); err != nil {
-		return err
-	}
-	if err := s.BindText(2, stamp); err != nil {
-		return err
-	}
-	if err := s.BindInt64(3, room); err != nil {
-		return err
-	}
-	if err := s.BindInt64(4, user); err != nil {
-		return err
-	}
-	if err := s.BindText(5, cutoff); err != nil {
-		return err
-	}
-	if row, err := s.Step(); err != nil {
-		return err
-	} else if row {
-		return errors.New("fastdb write: UPDATE returned a row")
-	}
-	return nil
+	return s.ExecBumpUnread(room, user, stamp, cutoff)
 }
 
 // ExecContext runs one arbitrary statement (the staged blob insert) through

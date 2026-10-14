@@ -25,6 +25,11 @@
 //     no Go pointer crosses into C and no Go object holds SQLite memory: the
 //     Cell accessors read that buffer and expose the same
 //     valid-until-Step/Reset views as ColumnBytes.
+//   - ExecTyped fuses the typed binds, step, last-insert-rowid capture and
+//     reset of one write statement into a single call. Its text arguments are
+//     bound with SQLITE_TRANSIENT (copied during the call), and the reset that
+//     follows a successful step reads no row buffer, so no Go pointer and no
+//     SQLite buffer outlives the call.
 package csqlite
 
 /*
@@ -98,6 +103,57 @@ static int fastdb_step_cells(sqlite3_stmt *stmt, fastdb_cell *cells, int cap) {
 		}
 	}
 	return rc;
+}
+
+// fastdb_write_run fuses one write statement's typed binds, step, optional
+// last-insert-rowid capture and reset into a single cgo transition. It is the
+// write-side counterpart of the read side's fastdb_step_cells.
+//
+// Kind codes, mirrored by csqlite.ArgKind: 0 skip, 1 integer, 2 text, 3 null.
+// Only the field matching the kind is read (ival for integer, p/n for text).
+// Text is bound with fastdb_bind_text's SQLITE_TRANSIENT rule, so no Go
+// pointer outlives the call.
+//
+// The error semantics reproduce the unfused bind/step/reset sequence exactly.
+// A failing bind or step returns its raw SQLite result code WITHOUT resetting,
+// so the caller can map sqlite3_errmsg while it is still the failing call's
+// message and then reset; the unfused path read errmsg before its deferred
+// reset did the same. On success the statement is reset and the reset result
+// is dropped, as the write lane's deferred Reset drops it. A step that yields
+// a row returns FASTDB_WRITE_ROW without resetting, and the caller resets.
+#define FASTDB_ARG_SKIP 0
+#define FASTDB_ARG_INT  1
+#define FASTDB_ARG_TEXT 2
+#define FASTDB_ARG_NULL 3
+#define FASTDB_WRITE_ROW (-2)
+
+static int fastdb_bind_slot(sqlite3_stmt *stmt, int idx, int kind, sqlite3_int64 ival, const void *p, int n) {
+	switch (kind) {
+	case FASTDB_ARG_INT:  return sqlite3_bind_int64(stmt, idx, ival);
+	case FASTDB_ARG_NULL: return sqlite3_bind_null(stmt, idx);
+	case FASTDB_ARG_TEXT: return fastdb_bind_text(stmt, idx, p, n);
+	default:              return SQLITE_OK;
+	}
+}
+
+static int fastdb_write_run(sqlite3_stmt *stmt, sqlite3_int64 *last_id, int want_last_id,
+		int k0, sqlite3_int64 v0, const void *p0, int n0,
+		int k1, sqlite3_int64 v1, const void *p1, int n1,
+		int k2, sqlite3_int64 v2, const void *p2, int n2,
+		int k3, sqlite3_int64 v3, const void *p3, int n3,
+		int k4, sqlite3_int64 v4, const void *p4, int n4) {
+	int rc;
+	rc = fastdb_bind_slot(stmt, 1, k0, v0, p0, n0); if (rc != SQLITE_OK) return rc;
+	rc = fastdb_bind_slot(stmt, 2, k1, v1, p1, n1); if (rc != SQLITE_OK) return rc;
+	rc = fastdb_bind_slot(stmt, 3, k2, v2, p2, n2); if (rc != SQLITE_OK) return rc;
+	rc = fastdb_bind_slot(stmt, 4, k3, v3, p3, n3); if (rc != SQLITE_OK) return rc;
+	rc = fastdb_bind_slot(stmt, 5, k4, v4, p4, n4); if (rc != SQLITE_OK) return rc;
+	rc = sqlite3_step(stmt);
+	if (rc != SQLITE_ROW && rc != SQLITE_DONE) return rc;
+	if (want_last_id) *last_id = sqlite3_last_insert_rowid(sqlite3_db_handle(stmt));
+	if (rc == SQLITE_ROW) return FASTDB_WRITE_ROW;
+	sqlite3_reset(stmt);
+	return SQLITE_OK;
 }
 */
 import "C"
@@ -315,6 +371,28 @@ func openError(rc C.int, db *C.sqlite3) error {
 	return &Error{Code: int(rc), Msg: msg}
 }
 
+// ArgKind classifies one ExecTyped argument. The zero value ArgSkip leaves the
+// slot unbound; a statement whose every placeholder is bound passes only
+// ArgInt, ArgText and ArgNull.
+type ArgKind int
+
+const (
+	ArgSkip ArgKind = iota
+	ArgInt
+	ArgText
+	ArgNull
+)
+
+// Arg is one positional argument to Stmt.ExecTyped: Kind selects which field
+// is read (Int for ArgInt, Text for ArgText; ArgNull and ArgSkip read
+// nothing). It is a plain value, so building the argument list allocates
+// nothing.
+type Arg struct {
+	Kind ArgKind
+	Int  int64
+	Text string
+}
+
 // Stmt is one prepared statement. It is not safe for concurrent use.
 type Stmt struct {
 	conn *Conn
@@ -328,6 +406,11 @@ type Stmt struct {
 	// instead of a stack variable, which cgo would otherwise force to escape
 	// on every observation.
 	dv C.sqlite3_int64
+	// lastID is fastdb_write_run's out-parameter scratch. Keeping it on the
+	// statement means the fused write passes a pointer into this heap object
+	// instead of a stack variable, which cgo would otherwise force to escape
+	// on every call.
+	lastID C.sqlite3_int64
 }
 
 // maxCells bounds a captured row. The widest statement the read layer runs is
@@ -401,6 +484,63 @@ func (s *Stmt) CellBytes(i int) []byte {
 		return nil
 	}
 	return unsafe.Slice((*byte)(unsafe.Pointer(c.bytes)), int(c.nbytes))
+}
+
+// textData returns the data pointer of a non-empty string, or nil for the
+// empty string (fastdb_bind_text maps NULL with n == 0 to an empty string).
+func textData(v string) unsafe.Pointer {
+	if len(v) == 0 {
+		return nil
+	}
+	return unsafe.Pointer(unsafe.StringData(v))
+}
+
+// ExecTyped runs one write statement as a single cgo transition: it binds up
+// to five typed positional arguments, steps the statement, optionally captures
+// the connection's last-insert-rowid, and resets. Binding each argument,
+// stepping, reading the rowid and resetting separately would cost one
+// transition apiece; this fuses the common write shapes (the message and
+// rich-text INSERTs and their siblings) into one.
+//
+// Error semantics match the unfused bind/step/reset sequence exactly: the
+// first failing bind or step is returned mapped through the connection's error
+// (read before the reset, as the unfused path read it before its deferred
+// reset), the statement is reset on every path so it stays reusable, and a
+// step that yields a row is reported with row=true and a nil error. On success
+// the reset's own result is dropped, exactly as the write lane's deferred
+// Reset drops it. wantLastID reads sqlite3_last_insert_rowid after the step and
+// before the reset, so the returned id names this statement's insert.
+func (s *Stmt) ExecTyped(wantLastID bool, a0, a1, a2, a3, a4 Arg) (lastID int64, row bool, err error) {
+	want := C.int(0)
+	if wantLastID {
+		want = 1
+	}
+	rc := C.fastdb_write_run(s.stmt, &s.lastID, want,
+		C.int(a0.Kind), C.sqlite3_int64(a0.Int), textData(a0.Text), C.int(len(a0.Text)),
+		C.int(a1.Kind), C.sqlite3_int64(a1.Int), textData(a1.Text), C.int(len(a1.Text)),
+		C.int(a2.Kind), C.sqlite3_int64(a2.Int), textData(a2.Text), C.int(len(a2.Text)),
+		C.int(a3.Kind), C.sqlite3_int64(a3.Int), textData(a3.Text), C.int(len(a3.Text)),
+		C.int(a4.Kind), C.sqlite3_int64(a4.Int), textData(a4.Text), C.int(len(a4.Text)),
+	)
+	runtime.KeepAlive(a0.Text)
+	runtime.KeepAlive(a1.Text)
+	runtime.KeepAlive(a2.Text)
+	runtime.KeepAlive(a3.Text)
+	runtime.KeepAlive(a4.Text)
+	switch rc {
+	case C.SQLITE_OK:
+		if !wantLastID {
+			return 0, false, nil
+		}
+		return int64(s.lastID), false, nil
+	case C.FASTDB_WRITE_ROW:
+		s.Reset()
+		return 0, true, nil
+	default:
+		err = s.conn.err(rc)
+		s.Reset()
+		return 0, false, err
+	}
 }
 
 // Step advances one row. It reports false at SQLITE_DONE and returns a typed
