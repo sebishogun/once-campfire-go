@@ -1291,9 +1291,6 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
-	scratch := publishScratchPool.Get().(*publishScratch)
-	scratch.reset()
-	defer publishScratchPool.Put(scratch)
 	members, err := h.db.RoomMemberIDs(ctx, room)
 	if err != nil {
 		return err
@@ -1301,6 +1298,12 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	if len(members) == 0 {
 		return nil
 	}
+	// Only a publication that has a room to notify acquires a scratch: a failed
+	// member read and an empty room return above, before the pool is touched
+	// (a cold pool allocates the whole scratch).
+	scratch := publishScratchPool.Get().(*publishScratch)
+	scratch.reset()
+	defer publishScratchPool.Put(scratch)
 	h.mu.RLock()
 	scope := ""
 	for _, member := range members {

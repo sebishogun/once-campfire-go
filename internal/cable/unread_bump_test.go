@@ -638,15 +638,24 @@ func TestUnreadBumpZeroAndNegativeTargetParity(t *testing.T) {
 	}
 }
 
-// TestUnreadBumpEligibilityScratchPoisoning pins the pooled result buffer's
-// reuse. The membership recheck appends into scratch.fresh, so a target left
-// eligible by an earlier publication must not survive into a later one: the
-// test drives the resolution directly with ONE scratch the test owns, which is
-// deterministic and does not depend on sync.Pool handing back the same object.
-func TestUnreadBumpEligibilityScratchPoisoning(t *testing.T) {
+// unreadPoisoningFixture is a closed two-member room whose members both hold an
+// unread subscription, shared by the scratch-reuse cases below.
+type unreadPoisoningFixture struct {
+	hub     *Hub
+	db      *database.DB
+	room    database.Room
+	first   database.User
+	firstC  *client
+	firstT  string
+	second  database.User
+	secondC *client
+	secondT string
+}
+
+func newUnreadPoisoningFixture(t testing.TB) unreadPoisoningFixture {
+	t.Helper()
 	hub, db, owner, _, _ := hubFixture(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	first, err := db.CreateUser(ctx, "First", "first@test", "digest", "", 0, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -659,71 +668,179 @@ func TestUnreadBumpEligibilityScratchPoisoning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstC, firstToken := unreadSubscriber(t, hub, db, first)
-	secondC, secondToken := unreadSubscriber(t, hub, db, second)
-	scope := roomScope(closed.ID)
+	firstC, firstT := unreadSubscriber(t, hub, db, first)
+	secondC, secondT := unreadSubscriber(t, hub, db, second)
+	return unreadPoisoningFixture{hub: hub, db: db, room: closed, first: first, firstC: firstC, firstT: firstT, second: second, secondC: secondC, secondT: secondT}
+}
+
+// unreadCandidate is one member's subscription as the snapshot would have
+// recorded it.
+type unreadCandidate struct {
+	user   database.User
+	client *client
+	token  string
+}
+
+func (f unreadPoisoningFixture) firstCandidate() unreadCandidate {
+	return unreadCandidate{user: f.first, client: f.firstC, token: f.firstT}
+}
+
+func (f unreadPoisoningFixture) secondCandidate() unreadCandidate {
+	return unreadCandidate{user: f.second, client: f.secondC, token: f.secondT}
+}
+
+// scratchWith builds a scratch exactly as an earlier publication would have
+// left it: fresh still holds stale as eligible, and the candidate buffers hold
+// exactly candidates. The test owns the object, so the reuse is deterministic
+// and does not depend on sync.Pool handing back the same one.
+func (f unreadPoisoningFixture) scratchWith(stale []int64, candidates ...unreadCandidate) *publishScratch {
+	s := &publishScratch{fresh: append([]int64{}, stale...)}
+	for _, c := range candidates {
+		s.recips = append(s.recips, recipient{client: c.client, identifier: unreadIdentifier, room: f.room.ID, scope: roomScope(f.room.ID), target: c.user.ID})
+		s.tokens = append(s.tokens, c.token)
+		s.targets = append(s.targets, c.user.ID)
+	}
+	return s
+}
+
+// TestUnreadBumpEligibilityScratchPoisoning pins the pooled result buffer's
+// reuse. The membership recheck appends into scratch.fresh, so a target left
+// eligible by an earlier publication must not survive into a later one; each
+// case starts from a scratch whose fresh already holds both targets and asserts
+// the refilled result, so removing the truncation fails every case on its own
+// assertion rather than being masked by an earlier one.
+func TestUnreadBumpEligibilityScratchPoisoning(t *testing.T) {
+	t.Run("refill", func(t *testing.T) {
+		f := newUnreadPoisoningFixture(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		scratch := f.scratchWith([]int64{f.first.ID, f.second.ID}, f.firstCandidate(), f.secondCandidate())
+		kept, err := f.hub.unreadEligible(ctx, scratch, f.room.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kept) != 2 {
+			t.Fatalf("eligible recipients = %d, want 2", len(kept))
+		}
+		if len(scratch.fresh) != 2 {
+			t.Fatalf("result buffer = %v, want both targets", scratch.fresh)
+		}
+	})
+
+	t.Run("smaller", func(t *testing.T) {
+		f := newUnreadPoisoningFixture(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		// The candidate set is smaller than the stale result: only the second
+		// member is a candidate, and it is still a member.
+		scratch := f.scratchWith([]int64{f.first.ID, f.second.ID}, f.secondCandidate())
+		kept, err := f.hub.unreadEligible(ctx, scratch, f.room.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kept) != 1 || kept[0].target != f.second.ID {
+			t.Fatalf("eligible recipients = %v, want only target %d", kept, f.second.ID)
+		}
+		if len(scratch.fresh) != 1 || scratch.fresh[0] != f.second.ID {
+			t.Fatalf("result buffer = %v, want exactly target %d (the stale target must not be retained)", scratch.fresh, f.second.ID)
+		}
+	})
+
+	t.Run("removal", func(t *testing.T) {
+		f := newUnreadPoisoningFixture(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		// The stale result holds both targets eligible; the only candidate is
+		// the member whose membership is removed before the recheck.
+		scratch := f.scratchWith([]int64{f.first.ID, f.second.ID}, f.secondCandidate())
+		removeMembership(t, f.db, f.room, f.second.ID, false)
+		if len(scratch.fresh) != 2 {
+			t.Fatalf("premise: the result buffer should still hold the stale pair, got %v", scratch.fresh)
+		}
+		kept, err := f.hub.unreadEligible(ctx, scratch, f.room.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kept) != 0 || len(scratch.fresh) != 0 {
+			t.Fatalf("removed target survived the recheck: kept=%v fresh=%v", kept, scratch.fresh)
+		}
+		expectSilent(t, f.secondC)
+	})
+
+	t.Run("survivor-frame", func(t *testing.T) {
+		f := newUnreadPoisoningFixture(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		// The survivor of the stale pair is still eligible, and its frame is
+		// the only one delivered. This case pins the delivered frame rather
+		// than the buffer's length: its target is in the stale set either way,
+		// so it is not a truncation detector — refill, smaller and removal are.
+		scratch := f.scratchWith([]int64{f.first.ID, f.second.ID}, f.firstCandidate())
+		kept, err := f.hub.unreadEligible(ctx, scratch, f.room.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kept) != 1 || kept[0].target != f.first.ID {
+			t.Fatalf("eligible recipients = %v, want only target %d", kept, f.first.ID)
+		}
+		scratch.wrap = f.hub.fanout(kept, map[string]any{"roomId": f.room.ID}, scratch.wrap)
+		expectBump(t, ctx, f.firstC, f.room.ID)
+		expectNone(t, f.firstC)
+		expectSilent(t, f.secondC)
+	})
+}
+
+// TestUnreadBumpScratchReset pins publishScratch.reset with every buffer
+// populated: a scratch taken from the pool must carry no length from the
+// previous publication. Each length assertion is the one that fails if reset
+// stops truncating that buffer, and the capacity assertions pin that reset
+// truncates rather than discards. The reset scratch is then refilled and
+// resolved, so the test ends on the reusable state rather than the truncation
+// alone.
+func TestUnreadBumpScratchReset(t *testing.T) {
+	hub, db, owner, _, _ := hubFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	member, err := db.CreateUser(ctx, "Member", "member@test", "digest", "", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := db.CreateRoom(ctx, owner.ID, "Rooms::Closed", "Pair", []int64{owner.ID, member.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, token := unreadSubscriber(t, hub, db, member)
 	scratch := &publishScratch{
-		recips: []recipient{
-			{client: firstC, identifier: unreadIdentifier, room: closed.ID, scope: scope, target: first.ID},
-			{client: secondC, identifier: unreadIdentifier, room: closed.ID, scope: scope, target: second.ID},
-		},
-		tokens:  []string{firstToken, secondToken},
-		targets: []int64{first.ID, second.ID},
-		// Poison: an earlier publication left BOTH targets eligible here.
-		fresh: []int64{first.ID, second.ID},
+		wrap:    []byte(`{"stale":true}`),
+		recips:  []recipient{{client: c, identifier: unreadIdentifier, room: closed.ID, scope: roomScope(closed.ID), target: member.ID}},
+		tokens:  []string{token},
+		targets: []int64{member.ID},
+		fresh:   []int64{member.ID},
+	}
+	scratch.reset()
+	if len(scratch.wrap) != 0 || len(scratch.recips) != 0 || len(scratch.tokens) != 0 || len(scratch.targets) != 0 || len(scratch.fresh) != 0 {
+		t.Fatalf("reset left lengths: wrap=%d recips=%d tokens=%d targets=%d fresh=%d",
+			len(scratch.wrap), len(scratch.recips), len(scratch.tokens), len(scratch.targets), len(scratch.fresh))
+	}
+	if cap(scratch.wrap) == 0 || cap(scratch.recips) == 0 || cap(scratch.tokens) == 0 || cap(scratch.targets) == 0 || cap(scratch.fresh) == 0 {
+		t.Fatalf("reset discarded a buffer instead of truncating it: wrap=%d recips=%d tokens=%d targets=%d fresh=%d",
+			cap(scratch.wrap), cap(scratch.recips), cap(scratch.tokens), cap(scratch.targets), cap(scratch.fresh))
 	}
 
-	// Both members eligible: the buffer is refilled with both.
+	// The reset scratch is reusable: refill the candidates and resolve.
+	scratch.recips = append(scratch.recips, recipient{client: c, identifier: unreadIdentifier, room: closed.ID, scope: roomScope(closed.ID), target: member.ID})
+	scratch.tokens = append(scratch.tokens, token)
+	scratch.targets = append(scratch.targets, member.ID)
 	kept, err := hub.unreadEligible(ctx, scratch, closed.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kept) != 2 {
-		t.Fatalf("eligible recipients = %d, want 2", len(kept))
+	if len(kept) != 1 || kept[0].target != member.ID {
+		t.Fatalf("eligible recipients after reset = %v, want target %d", kept, member.ID)
 	}
-	if len(scratch.fresh) != 2 {
-		t.Fatalf("result buffer = %v, want both targets", scratch.fresh)
-	}
-
-	// One membership removed and only that member a candidate: the smaller
-	// result must be exactly the survivor, not the poisoned pair.
-	removeMembership(t, db, closed, second.ID, false)
-	scratch.recips = scratch.recips[:1]
-	scratch.tokens = scratch.tokens[:1]
-	scratch.targets = scratch.targets[:1]
-	scratch.fresh = scratch.fresh[:0]
-	scratch.recips[0].client = secondC
-	scratch.recips[0].target = second.ID
-	scratch.tokens[0] = secondToken
-	scratch.targets[0] = second.ID
-	kept, err = hub.unreadEligible(ctx, scratch, closed.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(kept) != 0 || len(scratch.fresh) != 0 {
-		t.Fatalf("removed target survived the recheck: kept=%v fresh=%v", kept, scratch.fresh)
-	}
-	expectSilent(t, secondC)
-
-	// The survivor is still eligible, and its frame is the only one delivered.
-	scratch.recips = scratch.recips[:1]
-	scratch.tokens = scratch.tokens[:1]
-	scratch.targets = scratch.targets[:1]
-	scratch.recips[0].client = firstC
-	scratch.recips[0].target = first.ID
-	scratch.tokens[0] = firstToken
-	scratch.targets[0] = first.ID
-	kept, err = hub.unreadEligible(ctx, scratch, closed.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(kept) != 1 || kept[0].target != first.ID {
-		t.Fatalf("eligible recipients = %v, want only target %d", kept, first.ID)
-	}
-	scratch.wrap = hub.fanout(kept, map[string]any{"roomId": closed.ID}, scratch.wrap[:0])
-	expectBump(t, ctx, firstC, closed.ID)
-	expectNone(t, firstC)
-	expectSilent(t, secondC)
+	scratch.wrap = hub.fanout(kept, map[string]any{"roomId": closed.ID}, scratch.wrap)
+	expectBump(t, ctx, c, closed.ID)
+	expectNone(t, c)
 }
 
 // TestUnreadBumpSignedAliasSocketLifecycle drives a signed alias through the
