@@ -151,6 +151,32 @@ type publicResponse struct {
 // recorded replay with its encoding and headers already settled.
 func (w *publicResponse) markFinal() { w.final = true }
 
+// WritePrecomposed implements the front's precomposed seam on the compression
+// policy: the application hands the loop a finished head block and body, and
+// the wrapper contributes the one header line its WriteHeader contributes to
+// every response it sees — Vary: Accept-Encoding — in the map path's sorted
+// position, then forwards to the next receiver.
+//
+// Encoding needs no work here: the application pre-encodes the recorded pages
+// (its Content-Encoding is in the block), and WriteHeader's policy is a
+// pass-through for a response that already carries one. The line is inserted
+// only when the block lacks it, which is the case for the 304 block (the 200
+// block carries it), so the emitted head stays exactly the map path's.
+func (w *publicResponse) WritePrecomposed(status int, head []byte, body [][]byte) error {
+	w.status = status
+	head = insertHeadLine(head, "Vary", "Accept-Encoding")
+	receiver := findPrecomposedReceiver(w.ResponseWriter)
+	if receiver == nil {
+		return nil
+	}
+	return receiver.WritePrecomposed(status, head, body)
+}
+
+// forwardsPrecomposed marks the wrapper as a policy forwarder, not an emitter:
+// a chain that ends here (a net/http target listener behind PublicCompression)
+// cannot serve the lane, so Cache.Handler keeps the opaque capture.
+func (w *publicResponse) forwardsPrecomposed() {}
+
 func (w *publicResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *publicResponse) WriteHeader(status int) {
 	if status < 200 {

@@ -58,7 +58,17 @@ func bodyLimit(next http.Handler, limit int64) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// forwardedHeaders are the proxy headers the front strips when it is not
+// configured to forward client-supplied values. Package-level so the loop does
+// not rebuild the list per request.
+var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Port", "X-Forwarded-Proto", "Forwarded"}
+
 func forward(next http.Handler, c Config) http.Handler {
+	// The configuration is fixed for the process lifetime, so the three
+	// per-request decisions and the log sink are read once here instead of
+	// through the captured struct on every request.
+	forwardHeaders, logRequests, accessLog := c.ForwardHeaders, c.LogRequests, c.AccessLog
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The server allocates a fresh Request and Header map per request
 		// (net/http.readRequestLimit), so the header edits below are made in
@@ -66,8 +76,8 @@ func forward(next http.Handler, c Config) http.Handler {
 		// per-request allocation in the public chain (a full header-map copy
 		// for the cookie-heavy loadgen requests).
 		host, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if !c.ForwardHeaders {
-			for _, name := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Port", "X-Forwarded-Proto", "Forwarded"} {
+		if !forwardHeaders {
+			for _, name := range forwardedHeaders {
 				r.Header.Del(name)
 			}
 		}
@@ -86,11 +96,13 @@ func forward(next http.Handler, c Config) http.Handler {
 			}
 			r.Header.Set("X-Forwarded-Proto", scheme)
 		}
-		r.Header.Set("X-Request-Start", strconv.FormatInt(time.Now().UnixMilli(), 10))
+		// One clock read serves both the request-start header and the logged
+		// duration; the two used to be separate reads microseconds apart.
 		started := time.Now()
+		r.Header.Set("X-Request-Start", strconv.FormatInt(started.UnixMilli(), 10))
 		next.ServeHTTP(w, r)
-		if c.LogRequests {
-			if accessLog := c.AccessLog; accessLog != nil {
+		if logRequests {
+			if accessLog != nil {
 				accessLog(r.Method, r.URL.Path, time.Since(started))
 			} else {
 				slog.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(started))
