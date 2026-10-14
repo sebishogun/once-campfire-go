@@ -209,21 +209,21 @@ type recordResponse struct {
 	// that do not participate in the lane.
 	wireHeader http.Header
 	// seam is this capture's precomposed-forwarding view, installed by Handler
-	// when the chain can emit a precomposed response (precomposed.go). It
+	// when the front can complete a precomposed response (precomposed.go). It
 	// lives inside the capture — which is allocated per miss anyway — so the
 	// transparent writer costs no allocation of its own; the zero value is
 	// never used (Handler installs it only after the gate passes).
 	seam captureWriter
 }
 
-// recordResponse itself has no Unwrap: it stays opaque, so a chain that cannot
-// emit a precomposed response (the synthetic fixed-route fill over a
-// captureSink, a net/http target listener) keeps the application on the
-// byte-identical map path. When the chain can emit one, Handler installs
-// captureWriter (precomposed.go), which is the same bookkeeping plus the
-// precomposed seam and is the only front wrapper the web layer's receiver walk
-// passes through. See precomposed.go for why that keeps the front's
-// bookkeeping exact.
+// recordResponse itself has no Unwrap: it stays opaque, so a chain the front
+// cannot complete a precomposed response for (no emitter downstream, a
+// transforming response policy, the synthetic fixed-route fill over a
+// captureSink) keeps the application on the byte-identical map path. When it
+// can, Handler installs captureWriter (precomposed.go), which is the same
+// bookkeeping plus the precomposed seam and is the only front wrapper the web
+// layer's receiver walk passes through. See precomposed.go for the gate and
+// why the front's bookkeeping stays exact.
 
 func (w *recordResponse) WriteHeader(status int) {
 	if w.status != 0 {
@@ -296,7 +296,7 @@ func (c *Cache) Handler(next http.Handler) http.Handler {
 		eligible := (r.Method == "GET" || r.Method == "HEAD") && r.Header.Get("Upgrade") == "" && r.Header.Get("Range") == "" && len(r.URL.RequestURI()) <= 2048
 		if !eligible || c.capacity <= 0 || c.maxItem <= 0 {
 			w.Header().Set("X-Cache", "bypass")
-			next.ServeHTTP(seamWriterFor(w), r)
+			next.ServeHTTP(bypassWriter(w, r), r)
 			return
 		}
 		// Fixed routes replay a captured response instead of the application;
@@ -317,7 +317,7 @@ func (c *Cache) Handler(next http.Handler) http.Handler {
 		w.Header().Set("X-Cache", "miss")
 		fixed := c.FixedRoutes && fixedCandidate(r) && !c.fixedFailed
 		capture := &recordResponse{ResponseWriter: w, max: c.maxItem, captureAlways: fixed}
-		next.ServeHTTP(captureWriterFor(capture), r)
+		next.ServeHTTP(captureWriterFor(capture, r), r)
 		if capture.status == 0 {
 			capture.WriteHeader(200)
 		}

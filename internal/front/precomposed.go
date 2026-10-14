@@ -11,28 +11,41 @@ package front
 // map path (13 Set calls, the header sort, the ETag/Vary/Content-Length
 // formatting) that the lane exists to remove.
 //
-// The wrapper is now transparent when — and only when — the chain can actually
-// emit a precomposed response, and it stays in the path by being the receiver
-// itself: the application's WritePrecomposed call lands on the front wrapper,
-// which splices in the header lines the live map carries but the block does
-// not (the front's X-Cache marker above all, which the map path emits) and
-// forwards to the next receiver. The public compression wrapper is one of
-// those receivers, so its own policy (Vary: Accept-Encoding) still reaches the
-// emitted head.
+// The wrapper is transparent when — and only when — the front can complete a
+// precomposed response, and it stays in the path by being the receiver itself:
+// the application's WritePrecomposed call lands on the front wrapper, which
+// splices in the header lines the live map carries but the block does not (the
+// front's X-Cache marker above all, which the map path emits) and forwards to
+// the next receiver.
 //
-// Two properties keep this safe:
+// "Can complete" is two conditions, both about the front rather than about the
+// application, and both expressed as the writer the application sees so that
+// the web layer's yes/no walk cannot be told yes when the answer is no:
 //
-//   - The front cache can never store one of these responses: the application's
-//     recorded pages carry "Cache-Control: max-age=0, private, must-revalidate",
-//     and lifetime() requires a `public` directive, so the capture is always a
-//     pass-through (the head block, not the map, is the emitted head either
-//     way). A response the front could store would still be emitted correctly
-//     and simply not cached.
-//   - A chain that cannot emit a precomposed response (a net/http target
-//     listener, the synthetic fixed-route fill over a captureSink) keeps the
-//     opaque wrapper, so the application takes the byte-identical map path
-//     there. Cache.Handler installs a seam only after finding a receiver on
-//     the chain.
+//   - the chain must end in a writer that actually emits a precomposed
+//     response (the owned loop). A net/http target listener — the TLS/ACME
+//     public listener, the httptest harness — has none: the front's own
+//     policy wrapper accepts a precomposed call but forwards it, and a
+//     forwarder with nothing behind it would swallow the response;
+//   - no response policy in the chain may transform a body the application
+//     leaves unencoded. The public compression policy knows zstd and the
+//     application's selector does not, so a client that accepts only zstd
+//     gets an identity body from the application and a zstd body from the
+//     map path's policy pass. A framed identity body would go out
+//     uncompressed — four times the bytes — so such a request takes the map
+//     path (see publicResponse.wouldTransform).
+//
+// When either condition fails, the writer the application sees advertises
+// nothing: the capture itself is opaque, or the policy wrapper's own blocking
+// surface is installed (bypassWriter). Nothing silently succeeds without an
+// emitter. The wrappers live inside objects the request already owns — the
+// capture on the miss path, the policy wrapper on the bypass path — so
+// installing a seam adds no allocation.
+//
+// The front cache can never store a response the lane emits: the application's
+// recorded pages carry "Cache-Control: max-age=0, private, must-revalidate",
+// and lifetime() requires a `public` directive, so the capture is a
+// pass-through (the head block, not the map, is the emitted head either way).
 
 import (
 	"bytes"
@@ -47,17 +60,16 @@ type precomposedReceiver interface {
 }
 
 // precomposedForwarder is implemented by the front's own policy wrappers: they
-// accept a precomposed response but forward it rather than emit it, so a chain
-// that ends in one (a net/http target listener behind PublicCompression)
-// cannot serve the lane and must keep the opaque capture.
+// accept a precomposed response but forward it rather than emit it, so the
+// gate must look past them for the writer that actually emits.
 type precomposedForwarder interface {
 	forwardsPrecomposed()
 }
 
-// canPrecompose reports whether the chain ends in a writer that can emit a
+// emitterIn reports whether the chain ends in a writer that emits a
 // precomposed response: the owned loop's response. The walk follows Unwrap to
 // the end, skipping the front's own forwarding wrappers.
-func canPrecompose(w http.ResponseWriter) bool {
+func emitterIn(w http.ResponseWriter) bool {
 	for {
 		if _, ok := w.(precomposedReceiver); ok {
 			if _, forwards := w.(precomposedForwarder); !forwards {
@@ -70,6 +82,20 @@ func canPrecompose(w http.ResponseWriter) bool {
 		}
 		w = wrapper.Unwrap()
 	}
+}
+
+// frameEligible reports whether the front may let the application frame this
+// request: an emitter must exist downstream and no response policy may
+// transform the response. Both conditions are evaluated before the application
+// runs, so the answer is expressed as the writer the application sees.
+func frameEligible(w http.ResponseWriter, r *http.Request) bool {
+	if !emitterIn(w) {
+		return false
+	}
+	if policy, ok := w.(*publicResponse); ok && policy.wouldTransform(r) {
+		return false
+	}
+	return true
 }
 
 // findPrecomposedReceiver walks the writer chain (the same Unwrap walk the web
@@ -87,31 +113,44 @@ func findPrecomposedReceiver(w http.ResponseWriter) precomposedReceiver {
 	}
 }
 
-// seamWriterFor returns the writer the application sees on the bypass path:
-// the writer itself when the chain cannot emit a precomposed response, or a
-// seam that keeps the front's X-Cache marker on the wire when it can.
-func seamWriterFor(w http.ResponseWriter) http.ResponseWriter {
-	if canPrecompose(w) {
-		return &seamWriter{w}
-	}
-	return w
-}
-
 // captureWriterFor returns the writer the application sees on the miss path:
-// the capture itself when the chain cannot emit a precomposed response (the
-// application then takes the byte-identical map path), or the capture's own
-// embedded seam when it can. The seam is a field of the capture, so the
+// the capture itself when the front cannot complete a precomposed response
+// (the application then takes the byte-identical map path), or the capture's
+// own embedded seam when it can. The seam is a field of the capture, so the
 // transparent writer adds no allocation to the request.
-func captureWriterFor(capture *recordResponse) http.ResponseWriter {
-	if !canPrecompose(capture.ResponseWriter) {
+func captureWriterFor(capture *recordResponse, r *http.Request) http.ResponseWriter {
+	if !frameEligible(capture.ResponseWriter, r) {
 		return capture
 	}
 	capture.seam = captureWriter{capture}
 	return &capture.seam
 }
 
+// bypassWriter returns the writer the application sees on the bypass path (the
+// front cache disabled, or a request it will not serve). The policy wrapper
+// owns both surfaces — the seam and the blocking counterpart — so neither
+// costs an allocation; a chain without a policy wrapper (compression disabled)
+// has no request-owned home and takes a cold-path wrapper.
+func bypassWriter(w http.ResponseWriter, r *http.Request) http.ResponseWriter {
+	policy, ok := w.(*publicResponse)
+	if ok {
+		if frameEligible(w, r) {
+			policy.seam = seamWriter{policy}
+			return &policy.seam
+		}
+		policy.block = sealedWriter{policy}
+		return &policy.block
+	}
+	if frameEligible(w, r) {
+		// No policy wrapper: the seam is the front's only marker home, and
+		// this is the only allocation on the bypass path.
+		return &seamWriter{w}
+	}
+	return w
+}
+
 // captureWriter is the capture wrapper the public miss path installs when the
-// chain can emit a precomposed response: the ordinary recordResponse
+// front can complete a precomposed response: the ordinary recordResponse
 // bookkeeping plus the precomposed seam. It is the only front wrapper that
 // unwraps, so the web layer's receiver walk reaches the loop through it while
 // the application's precomposed write still lands on the front.
@@ -133,10 +172,9 @@ func (w *captureWriter) WritePrecomposed(status int, head []byte, body [][]byte)
 	return forwardPrecomposed(w.ResponseWriter, status, head, body)
 }
 
-// seamWriter is the bypass path's writer: the response is not cacheable by
-// construction (the cache round did not run), so the seam carries no capture —
-// only the precomposed forwarding, which keeps the front's X-Cache marker on
-// the wire when the application frames the response.
+// seamWriter is the bypass path's seam: it carries no capture (the cache round
+// did not run), only the precomposed forwarding, which keeps the front's
+// X-Cache marker on the wire when the application frames the response.
 type seamWriter struct {
 	http.ResponseWriter
 }
@@ -145,6 +183,16 @@ func (w *seamWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *seamWriter) forwardsPrecomposed()        {}
 func (w *seamWriter) WritePrecomposed(status int, head []byte, body [][]byte) error {
 	return forwardPrecomposed(w.ResponseWriter, status, head, body)
+}
+
+// sealedWriter hides a downstream writer's precomposed seam while forwarding
+// the plain ResponseWriter surface: it has no Unwrap and no WritePrecomposed,
+// so the web layer's receiver walk stops at it and the application takes the
+// byte-identical map path. It is what the bypass path installs when the front
+// cannot complete a precomposed response but a policy wrapper would otherwise
+// advertise one.
+type sealedWriter struct {
+	http.ResponseWriter
 }
 
 // forwardPrecomposed hands the application's head block and body to the next
@@ -156,13 +204,16 @@ func (w *seamWriter) WritePrecomposed(status int, head []byte, body [][]byte) er
 func forwardPrecomposed(next http.ResponseWriter, status int, head []byte, body [][]byte) error {
 	receiver := findPrecomposedReceiver(next)
 	if receiver == nil {
-		// Unreachable: a seam is installed only after finding a receiver on
-		// the chain, and nothing rewrites the chain in between. There is no
-		// map to fall back to (the framed path never built one).
+		// Unreachable: a seam is installed only after the gate found an
+		// emitter, and nothing rewrites the chain in between. There is no map
+		// to fall back to (the framed path never built one).
 		return nil
 	}
 	return receiver.WritePrecomposed(status, spliceMissingHeaders(head, next.Header(), status), body)
 }
+
+// headerLine is one rendered header line waiting to be spliced.
+type headerLine struct{ name, value string }
 
 // spliceMissingHeaders completes the application's head block with the header
 // lines the map path would emit on top of it.
@@ -175,40 +226,78 @@ func forwardPrecomposed(next http.ResponseWriter, status int, head []byte, body 
 // other status is a suppression of the 200 block (the 304 drops the entity
 // headers, Content-Encoding among them), so those blocks are completed from
 // the map, which is the shape the map path's own 304 has.
+//
+// The missing lines are decided against the block as it arrived — the checks
+// are independent of the insert order — and the block is grown once for the
+// whole run, with room for the policy's own line, so a tight block costs one
+// replacement rather than one per line. A block with spare capacity (the
+// application carves it from the request arena) allocates nothing.
 func spliceMissingHeaders(head []byte, h http.Header, status int) []byte {
+	var buf [8]headerLine
+	missing := buf[:0]
+	add := func(name, value string) {
+		if value == "" || headHasLine(head, name) {
+			return
+		}
+		missing = append(missing, headerLine{name: name, value: value})
+	}
 	if marker := h.Get("X-Cache"); marker != "" {
-		head = insertHeadLine(head, "X-Cache", marker)
+		add("X-Cache", marker)
 	}
 	if status != http.StatusOK {
 		for name, values := range h {
 			for _, value := range values {
-				if value == "" {
-					continue
-				}
-				head = insertHeadLine(head, name, value)
+				add(name, value)
 			}
 		}
 	}
+	if len(missing) == 0 {
+		return head
+	}
+	need := policyLineRoom
+	for _, line := range missing {
+		need += len(line.name) + len(line.value) + 4
+	}
+	if cap(head)-len(head) < need {
+		grown := make([]byte, len(head), len(head)+need)
+		copy(grown, head)
+		head = grown
+	}
+	for _, line := range missing {
+		head = insertHeadLine(head, line.name, line.value)
+	}
 	return head
+}
+
+// policyLineRoom is the room a growth reserves for the lines the response
+// policy adds after the splice (the compression wrapper's Vary). One
+// replacement block then serves the whole run.
+const policyLineRoom = 40
+
+// headHasLine reports whether a head block already carries a header line with
+// this name. Presence is tested at a line start, so a value that happens to
+// contain the name cannot suppress the insert.
+func headHasLine(head []byte, name string) bool {
+	var needleBuf [80]byte
+	needle := append(needleBuf[:0], '\r', '\n')
+	needle = append(needle, name...)
+	needle = append(needle, ':', ' ')
+	return bytes.HasPrefix(head, needle[2:]) || bytes.Contains(head, needle)
 }
 
 // insertHeadLine inserts one rendered "Name: value\r\n" line into a head block
 // sorted by canonical header name, keeping that order. The line is built in a
 // stack buffer, so the call allocates nothing when the block has spare
-// capacity. Presence is tested at a line start, so a value that happens to
-// contain the name cannot suppress the insert.
+// capacity.
 func insertHeadLine(head []byte, name, value string) []byte {
-	var lineBuf, needleBuf [80]byte
-	line := append(lineBuf[:0], name...)
-	line = append(line, ':', ' ')
-	nameEnd := len(line) // "Name: "
-	line = append(line, value...)
-	line = append(line, '\r', '\n')
-	needle := append(needleBuf[:0], '\r', '\n')
-	needle = append(needle, line[:nameEnd]...)
-	if bytes.HasPrefix(head, line[:nameEnd]) || bytes.Contains(head, needle) {
+	if headHasLine(head, name) {
 		return head
 	}
+	var lineBuf [80]byte
+	line := append(lineBuf[:0], name...)
+	line = append(line, ':', ' ')
+	line = append(line, value...)
+	line = append(line, '\r', '\n')
 	at := len(head)
 	for i := 0; i < len(head); {
 		end := bytes.IndexByte(head[i:], '\n')

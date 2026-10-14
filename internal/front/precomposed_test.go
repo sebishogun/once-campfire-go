@@ -117,6 +117,39 @@ func seamChain(t *testing.T, stub *precomposedStub, hide bool) string {
 	return serveLoopHandler(t, PublicCompression(cache.Handler(app), cfg))
 }
 
+// seamTestHeader is the live header map of a framed response: the application's
+// lines plus the front's own X-Cache marker.
+func seamTestHeader() http.Header {
+	return http.Header{
+		"X-Cache":                           {"miss"},
+		"Content-Encoding":                  {"gzip"},
+		"Content-Length":                    {"7"},
+		"Content-Type":                      {"text/html; charset=utf-8"},
+		"Etag":                              {`W/"0f1e2d3c4b5a69788796a5b4c3d2e1f0"`},
+		"Referrer-Policy":                   {"strict-origin-when-cross-origin"},
+		"Vary":                              {"Accept-Encoding"},
+		"X-Content-Type-Options":            {"nosniff"},
+		"X-Frame-Options":                   {"SAMEORIGIN"},
+		"X-Permitted-Cross-Domain-Policies": {"none"},
+		"X-Rev":                             {"0"},
+		"X-Version":                         {"Go"},
+		"X-Xss-Protection":                  {"0"},
+	}
+}
+
+// emitterWriter is a terminal precomposed receiver for the wrapper tests: it
+// records the emission and writes nothing (the real loop receiver is exercised
+// byte-for-byte by the parity tests).
+type emitterWriter struct {
+	http.ResponseWriter
+	calls int
+}
+
+func (w *emitterWriter) WritePrecomposed(status int, head []byte, body [][]byte) error {
+	w.calls++
+	return nil
+}
+
 // TestPrecomposedSeamByteParity pins the seam against the map path on the owned
 // loop for a 200 and a 304: the lane must be the active writer and the emitted
 // bytes must match with only Date masked.
@@ -199,21 +232,7 @@ func TestPrecomposedSeamGatedOnEmitter(t *testing.T) {
 // the map's residual lines into it is in place and allocation-free.
 func TestPrecomposedSeamSpliceAllocatesNothing(t *testing.T) {
 	template := stubHeadPrefix + stubSecurity
-	h := http.Header{
-		"X-Cache":                           {"miss"},
-		"Content-Encoding":                  {"gzip"},
-		"Content-Length":                    {"7"},
-		"Content-Type":                      {"text/html; charset=utf-8"},
-		"Etag":                              {`W/"0f1e2d3c4b5a69788796a5b4c3d2e1f0"`},
-		"Referrer-Policy":                   {"strict-origin-when-cross-origin"},
-		"Vary":                              {"Accept-Encoding"},
-		"X-Content-Type-Options":            {"nosniff"},
-		"X-Frame-Options":                   {"SAMEORIGIN"},
-		"X-Permitted-Cross-Domain-Policies": {"none"},
-		"X-Rev":                             {"0"},
-		"X-Version":                         {"Go"},
-		"X-Xss-Protection":                  {"0"},
-	}
+	h := seamTestHeader()
 	// The arena carve's shape: a block with room beyond the head the
 	// application appended into it.
 	head := make([]byte, 0, 2048)
@@ -232,5 +251,98 @@ func TestPrecomposedSeamSpliceAllocatesNothing(t *testing.T) {
 	}
 	if &out[0] != &head[0] {
 		t.Fatal("splice did not write in place into the carved block")
+	}
+}
+
+// TestPrecomposedSeamGatedOnEmitterBypass pins the same gate on the bypass
+// path (the front cache disabled, or a request it will not serve): the
+// application must not be told a precomposed response can be emitted when the
+// chain has no emitter, or its body disappears into the forwarding wrapper.
+func TestPrecomposedSeamGatedOnEmitterBypass(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		cache    int64
+		headers  map[string]string
+		wantBody string
+	}{
+		{"cache_disabled", 0, nil, "payload"},
+		{"range_bypass", 64 << 20, map[string]string{"Range": "bytes=0-3"}, "payload"},
+		{"upgrade_bypass", 64 << 20, map[string]string{"Upgrade": "websocket"}, "payload"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stub := stub200()
+			cfg := Config{Gzip: true, CompressionJitter: 32, LogRequests: false, CacheSize: test.cache, MaxCacheItemSize: test.cache}
+			cache := NewCache(cfg.CacheSize, cfg.MaxCacheItemSize)
+			cache.FixedRoutes = false
+			server := httptest.NewServer(PublicCompression(cache.Handler(stub), cfg))
+			defer server.Close()
+			client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+			defer client.CloseIdleConnections()
+			request, err := http.NewRequest("GET", server.URL+"/rooms/1", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, value := range test.headers {
+				request.Header.Set(name, value)
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, readErr := io.ReadAll(response.Body)
+			response.Body.Close()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if response.StatusCode != 200 || string(body) != test.wantBody {
+				t.Fatalf("status %d body %q, want 200 %q", response.StatusCode, body, test.wantBody)
+			}
+			if stub.calls.Load() != 0 {
+				t.Fatalf("a chain without an emitter framed %d responses", stub.calls.Load())
+			}
+		})
+	}
+}
+
+// TestPrecomposedSeamTightBlockAllocations pins the tight-block path — a caller
+// that built the head itself, without the arena's spare capacity: one
+// replacement block serves the whole run, the splice lines and the policy's own
+// Vary line included, for both the 200 block and the 304 block (whose map
+// carries the coding the block suppresses).
+func TestPrecomposedSeamTightBlockAllocations(t *testing.T) {
+	h304 := http.Header{
+		"X-Cache":                           {"miss"},
+		"Content-Encoding":                  {"gzip"},
+		"Referrer-Policy":                   {"strict-origin-when-cross-origin"},
+		"X-Content-Type-Options":            {"nosniff"},
+		"X-Frame-Options":                   {"SAMEORIGIN"},
+		"X-Permitted-Cross-Domain-Policies": {"none"},
+		"X-Rev":                             {"0"},
+		"X-Version":                         {"Go"},
+		"X-Xss-Protection":                  {"0"},
+	}
+	for _, test := range []struct {
+		name   string
+		block  string
+		header http.Header
+		status int
+	}{
+		{"200", stubHeadPrefix + stubSecurity, seamTestHeader(), http.StatusOK},
+		{"304", "Cache-Control: no-cache\r\nReferrer-Policy: strict-origin-when-cross-origin\r\n" + stubSecurity, h304, http.StatusNotModified},
+	} {
+		tight := []byte(test.block) // cap == len: no spare capacity
+		var out []byte
+		allocs := testing.AllocsPerRun(200, func() {
+			out = spliceMissingHeaders(tight, test.header, test.status)
+			out = insertHeadLine(out, "Vary", "Accept-Encoding")
+		})
+		if allocs != 1 {
+			t.Fatalf("%s: tight block allocated %v objects, want 1", test.name, allocs)
+		}
+		for _, want := range []string{"X-Cache: miss\r\n", "Vary: Accept-Encoding\r\n"} {
+			if !bytes.Contains(out, []byte(want)) {
+				t.Fatalf("%s: spliced block lacks %q:\n%s", test.name, want, out)
+			}
+		}
 	}
 }

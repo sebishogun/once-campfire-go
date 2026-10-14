@@ -16,11 +16,15 @@ package web
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -102,14 +106,23 @@ type publicChain struct {
 	addr  string
 }
 
-// testPublicChainPair builds two applications over one database — the public
-// chain with the precomposed lane reachable and with it hidden — each served by
-// a real owned loop. cacheSize is the front response cache's capacity: a
-// positive value exercises the miss path, zero the bypass path.
-func testPublicChainPair(t *testing.T, cacheSize int64) (on, off publicChain, cookie *http.Cookie, user database.User) {
+// chainFixture builds two applications over one database — the public chain
+// with the precomposed lane reachable and with it hidden — plus a session and a
+// room. cacheSize is the front response cache's capacity: a positive value
+// exercises the miss path, zero the bypass path. zstd selects the recorded
+// zstd frame variant, which changes the application's own encoding decision.
+type chainFixture struct {
+	on, off *Server
+	cookie  *http.Cookie
+	user    database.User
+	room    database.Room
+}
+
+func chainFixtureFor(t *testing.T, zstd string) chainFixture {
 	t.Helper()
 	t.Setenv("CAMPFIRE_FROZEN_TIME", "2026-01-02T03:04:05Z")
 	t.Setenv("CAMPFIRE_RECORDED_PIECES", "on")
+	t.Setenv("CAMPFIRE_RECORDED_ZSTD", zstd)
 	t.Setenv("CAMPFIRE_PRECOMPOSED_FRAMING", "on")
 	t.Setenv("CAMPFIRE_REQUEST_ARENA", "on")
 	// The whole-response cache would serve the second request of a case from
@@ -136,7 +149,7 @@ func testPublicChainPair(t *testing.T, cacheSize int64) (on, off publicChain, co
 		t.Fatal(err)
 	}
 	t.Cleanup(offApp.Close)
-	user, err = db.Setup(context.Background(), "Owner", "owner@test", "digest")
+	user, err := db.Setup(context.Background(), "Owner", "owner@test", "digest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,19 +161,46 @@ func testPublicChainPair(t *testing.T, cacheSize int64) (on, off publicChain, co
 	if err != nil {
 		t.Fatal(err)
 	}
-	cookie = &http.Cookie{Name: "session_token", Value: rails.EscapeCookie(signed)}
-
-	cfg := front.Config{Gzip: true, CompressionJitter: 32, LogRequests: false, CacheSize: cacheSize, MaxCacheItemSize: cacheSize}
-	compose := func(app http.Handler) http.Handler {
-		cache := front.NewCache(cfg.CacheSize, cfg.MaxCacheItemSize)
-		cache.FixedRoutes = true
-		return front.PublicCompression(cache.Handler(front.Deflate(app)), cfg)
+	rooms, err := onApp.DB.Rooms(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	on = publicChain{app: onApp, probe: newSeamProbe()}
-	on.addr = servePublicLoop(t, on.probe.wrap(compose(onApp)))
-	off = publicChain{app: offApp, probe: newSeamProbe()}
-	off.addr = servePublicLoop(t, off.probe.wrap(compose(hidePrecomposed(offApp))))
-	return
+	if _, err := onApp.DB.CreateMessage(context.Background(), user.ID, rooms[0].ID, "parity seed", "<p>parity seed</p>", "parity seed"); err != nil {
+		t.Fatal(err)
+	}
+	return chainFixture{
+		on:     onApp,
+		off:    offApp,
+		cookie: &http.Cookie{Name: "session_token", Value: rails.EscapeCookie(signed)},
+		user:   user,
+		room:   rooms[0],
+	}
+}
+
+// composePublic builds the production public composition over one application.
+func composePublic(app http.Handler, cacheSize int64) http.Handler {
+	cfg := front.Config{Gzip: true, CompressionJitter: 32, LogRequests: false, CacheSize: cacheSize, MaxCacheItemSize: cacheSize}
+	cache := front.NewCache(cfg.CacheSize, cfg.MaxCacheItemSize)
+	cache.FixedRoutes = true
+	return front.PublicCompression(cache.Handler(front.Deflate(app)), cfg)
+}
+
+// testPublicChainPair serves the fixture on two owned loops: the lane reachable
+// and the lane hidden by an opaque writer.
+func testPublicChainPair(t *testing.T, cacheSize int64) (on, off publicChain, cookie *http.Cookie, user database.User) {
+	return testPublicChainPairZstd(t, cacheSize, "off")
+}
+
+// testPublicChainPairZstd is testPublicChainPair with the recorded zstd frame
+// variant configurable.
+func testPublicChainPairZstd(t *testing.T, cacheSize int64, zstd string) (on, off publicChain, cookie *http.Cookie, user database.User) {
+	t.Helper()
+	fixture := chainFixtureFor(t, zstd)
+	on = publicChain{app: fixture.on, probe: newSeamProbe()}
+	on.addr = servePublicLoop(t, on.probe.wrap(composePublic(fixture.on, cacheSize)))
+	off = publicChain{app: fixture.off, probe: newSeamProbe()}
+	off.addr = servePublicLoop(t, off.probe.wrap(composePublic(hidePrecomposed(fixture.off), cacheSize)))
+	return on, off, fixture.cookie, fixture.user
 }
 
 // servePublicLoop runs one handler on a private owned loop and returns its
@@ -287,47 +327,273 @@ func TestPublicChainPrecomposedParity(t *testing.T) {
 	}
 }
 
-// TestPublicChainBypassMarkerParity pins the bypass path's marker: with the
-// front response cache disabled every public request bypasses it, and the
-// application still frames the recorded page, so the front's X-Cache marker
-// must reach the wire through the seam exactly as the map path emits it.
+// TestPublicChainBypassMarkerParity pins the bypass path's marker on the owned
+// loop: with the front response cache disabled every public request bypasses
+// it, and a Range request bypasses a cache that is otherwise enabled. The
+// application still frames the recorded page in both cases, so the front's
+// X-Cache marker must reach the wire through the seam exactly as the map path
+// emits it, with the body complete and the lane engaged.
 func TestPublicChainBypassMarkerParity(t *testing.T) {
-	on, off, cookie, user := testPublicChainPair(t, 0)
-	ctx := context.Background()
-	rooms, err := on.app.DB.Rooms(ctx, user.ID)
+	for _, test := range []struct {
+		name      string
+		cacheSize int64
+		rangeArg  string
+		want      string
+	}{
+		{"cache_disabled", 0, "", "bypass"},
+		{"range_bypass", 64 << 20, "bytes=0-3", "bypass"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			on, off, cookie, user := testPublicChainPair(t, test.cacheSize)
+			ctx := context.Background()
+			rooms, err := on.app.DB.Rooms(ctx, user.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			room := rooms[0]
+			if _, err := on.app.DB.CreateMessage(ctx, user.ID, room.ID, "bypass", "<p>bypass</p>", "bypass"); err != nil {
+				t.Fatal(err)
+			}
+			path := "/rooms/" + strconv.FormatInt(room.ID, 10)
+			lastRoom := "last_room=" + strconv.FormatInt(room.ID, 10)
+
+			// Warm the piece and variant caches so the lane is reachable on
+			// the request under test.
+			for _, addr := range []string{on.addr, off.addr} {
+				rawFetch(t, addr, "campfire.test", "GET", path, "gzip", "", cookie, lastRoom)
+			}
+			for round := 0; round < 2; round++ {
+				before := on.probe.count(200)
+				rawOn, statusOn := rawFetchHeaders(t, on.addr, path, cookie, lastRoom, test.rangeArg)
+				rawOff, statusOff := rawFetchHeaders(t, off.addr, path, cookie, lastRoom, test.rangeArg)
+				if statusOn != statusOff {
+					t.Fatalf("round %d: status %d vs %d", round, statusOn, statusOff)
+				}
+				if !bytes.Contains(rawOn, []byte("X-Cache: "+test.want+"\r\n")) {
+					t.Fatalf("round %d: bypassed lane response lacks the X-Cache marker:\n%s", round, maskedHead(rawOn))
+				}
+				if got := on.probe.count(200); got == before {
+					t.Fatalf("round %d: the lane did not frame the bypassed request", round)
+				}
+				if !bytes.Equal(maskDate(rawOn), maskDate(rawOff)) {
+					t.Fatalf("round %d: bypassed lane vs map mismatch\n--- lane ---\n%s\n--- map ---\n%s", round, maskDate(rawOn), maskDate(rawOff))
+				}
+			}
+			if off.probe.count(200) != 0 {
+				t.Fatal("the hidden-lane chain emitted a precomposed response")
+			}
+		})
+	}
+}
+
+// rawFetchHeaders is the raw exchange used here: one GET with the loadgen's
+// header shape plus an optional Range, which bypasses an otherwise enabled
+// front cache without changing the cookie shape.
+func rawFetchHeaders(t *testing.T, addr, path string, cookie *http.Cookie, lastRoom, rangeArg string) ([]byte, int) {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	room := rooms[0]
-	if _, err := on.app.DB.CreateMessage(ctx, user.ID, room.ID, "bypass", "<p>bypass</p>", "bypass"); err != nil {
+	defer conn.Close()
+	var request strings.Builder
+	fmt.Fprintf(&request, "GET %s HTTP/1.1\r\nHost: campfire.test\r\nConnection: close\r\nAccept-Encoding: gzip\r\n", path)
+	if rangeArg != "" {
+		fmt.Fprintf(&request, "Range: %s\r\n", rangeArg)
+	}
+	fmt.Fprintf(&request, "Cookie: session_token=%s; %s\r\n\r\n", cookie.Value, lastRoom)
+	if _, err := conn.Write([]byte(request.String())); err != nil {
 		t.Fatal(err)
 	}
-	path := "/rooms/" + strconv.FormatInt(room.ID, 10)
-	lastRoom := "last_room=" + strconv.FormatInt(room.ID, 10)
-
-	for round := 0; round < 2; round++ {
-		rawOn, statusOn := rawFetch(t, on.addr, "campfire.test", "GET", path, "gzip", "", cookie, lastRoom)
-		rawOff, statusOff := rawFetch(t, off.addr, "campfire.test", "GET", path, "gzip", "", cookie, lastRoom)
-		if statusOn != statusOff {
-			t.Fatalf("round %d: status %d vs %d", round, statusOn, statusOff)
-		}
-		if !bytes.Contains(rawOn, []byte("X-Cache: bypass\r\n")) {
-			t.Fatalf("round %d: bypassed lane response lacks the X-Cache marker:\n%s", round, maskedHead(rawOn))
-		}
-		if !bytes.Equal(maskDate(rawOn), maskDate(rawOff)) {
-			t.Fatalf("round %d: bypassed lane vs map mismatch\n--- lane ---\n%s\n--- map ---\n%s", round, maskDate(rawOn), maskDate(rawOff))
-		}
+	raw, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if on.probe.count(200) == 0 {
-		t.Fatal("the bypassed public chain did not frame the recorded page")
-	}
-	if off.probe.count(200) != 0 {
-		t.Fatal("the hidden-lane chain emitted a precomposed response")
-	}
+	head, _, _ := bytes.Cut(raw, []byte("\r\n\r\n"))
+	lines := bytes.Split(head, []byte("\r\n"))
+	status := 0
+	fmt.Sscanf(string(lines[0]), "HTTP/1.1 %d", &status)
+	return raw, status
 }
 
 // maskedHead returns the head block of a raw response.
 func maskedHead(raw []byte) []byte {
 	head, _, _ := bytes.Cut(raw, []byte("\r\n\r\n"))
 	return head
+}
+
+// expectation is what a zstd negotiation case must do with the precomposed
+// lane: frame it, leave it to the map path, or either (both are byte-safe).
+type expectation int
+
+const (
+	either expectation = iota
+	mustFrame
+	mustNotFrame
+)
+
+// TestPublicChainZstdNegotiationParity pins the negotiation cases the first
+// harness omitted: a client that accepts only zstd, one that prefers zstd over
+// gzip, and the mixed shapes, with the application's recorded zstd frame
+// variant on and off. The public compression policy knows zstd and the
+// application's own selector does not (unless the zstd variant is on), so a
+// response the application renders as identity would be compressed by the
+// policy on the map path; the lane must not serve it as identity bytes.
+func TestPublicChainZstdNegotiationParity(t *testing.T) {
+	for _, zstd := range []string{"off", "on"} {
+		t.Run("zstd_"+zstd, func(t *testing.T) {
+			on, off, cookie, user := testPublicChainPairZstd(t, 64<<20, zstd)
+			ctx := context.Background()
+			rooms, err := on.app.DB.Rooms(ctx, user.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			room := rooms[0]
+			if _, err := on.app.DB.CreateMessage(ctx, user.ID, room.ID, "zstd", "<p>zstd seed</p>", "zstd seed"); err != nil {
+				t.Fatal(err)
+			}
+			path := "/rooms/" + strconv.FormatInt(room.ID, 10)
+			lastRoom := "last_room=" + strconv.FormatInt(room.ID, 10)
+			// The expectations pin the front's gate where correctness
+			// requires it: with the recorded zstd variant off, a client whose
+			// gzip/identity decision is "identity" while the policy selected
+			// zstd must take the map path (the map path compresses the
+			// identity body; a framed one would go out uncompressed). With the
+			// variant on the application pre-encodes zstd, so the lane is safe
+			// either way and the gate's conservative answer is not pinned.
+			cases := []struct {
+				label, accept string
+				off, on       expectation
+			}{
+				{"zstd_only", "zstd", mustNotFrame, either},
+				{"zstd_only_gzip_rejected", "zstd, gzip;q=0", mustNotFrame, either},
+				{"gzip_and_zstd", "gzip, zstd", mustFrame, mustFrame},
+				{"zstd_preferred", "gzip;q=0.5, zstd;q=1", mustFrame, mustFrame},
+				{"gzip_preferred", "gzip;q=1, zstd;q=0.5", mustFrame, mustFrame},
+				{"zstd_identity", "zstd, identity", mustNotFrame, either},
+			}
+			want := func(c struct {
+				label, accept string
+				off, on       expectation
+			}) expectation {
+				if zstd == "on" {
+					return c.on
+				}
+				return c.off
+			}
+			for round := 0; round < 2; round++ {
+				for _, c := range cases {
+					before := on.probe.count(200)
+					rawOn, statusOn := rawFetch(t, on.addr, "campfire.test", "GET", path, c.accept, "", cookie, lastRoom)
+					emitted := on.probe.count(200) != before
+					switch want(c) {
+					case mustFrame:
+						if !emitted {
+							t.Fatalf("%s/%d: the lane did not frame a response the policy passes through", c.label, round)
+						}
+					case mustNotFrame:
+						if emitted {
+							t.Fatalf("%s/%d: the lane framed a response the policy would compress", c.label, round)
+						}
+					}
+					rawOff, statusOff := rawFetch(t, off.addr, "campfire.test", "GET", path, c.accept, "", cookie, lastRoom)
+					if statusOn != statusOff {
+						t.Fatalf("%s/%d: status %d vs %d", c.label, round, statusOn, statusOff)
+					}
+					a, b := maskDate(rawOn), maskDate(rawOff)
+					if !bytes.Equal(a, b) {
+						at := 0
+						for at < len(a) && at < len(b) && a[at] == b[at] {
+							at++
+						}
+						t.Fatalf("%s/%d: wire differs at offset %d (lane %d bytes, map %d bytes)\n--- lane ---\n%q\n--- map ---\n%q", c.label, round, at, len(a), len(b), a[max(0, at-80):min(len(a), at+80)], b[max(0, at-80):min(len(b), at+80)])
+					}
+					t.Logf("%s/%d OK (%d bytes)", c.label, round, len(rawOn))
+				}
+			}
+			if off.probe.count(200) != 0 || off.probe.count(304) != 0 {
+				t.Fatalf("hidden chain emissions: 200=%d 304=%d", off.probe.count(200), off.probe.count(304))
+			}
+		})
+	}
+}
+
+// TestPublicChainBypassOnNetHTTP is the bypass regression on the base writer
+// the TLS/ACME public listener uses (net/http, not the owned loop; the loop
+// only serves the plain-HTTP listener). The front must not tell the
+// application a precomposed response can be emitted when nothing downstream
+// can emit it — the forwarding policy wrapper would swallow the body — so a
+// cache-disabled chain and a Range-triggered bypass must both deliver the
+// complete response through the map path.
+func TestPublicChainBypassOnNetHTTP(t *testing.T) {
+	fixture := chainFixtureFor(t, "off")
+	path := "/rooms/" + strconv.FormatInt(fixture.room.ID, 10)
+	lastRoom := "last_room=" + strconv.FormatInt(fixture.room.ID, 10)
+
+	// The reference side hides the precomposed seam at the application level,
+	// which is exactly the map path the gate must fall back to.
+	onServer := httptest.NewServer(composePublic(fixture.on, 0))
+	defer onServer.Close()
+	offServer := httptest.NewServer(composePublic(hidePrecomposed(fixture.off), 0))
+	defer offServer.Close()
+	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	defer client.CloseIdleConnections()
+
+	fetch := func(server *httptest.Server, rangeHeader string) (int, string, []byte) {
+		request, err := http.NewRequest("GET", server.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// One host for both servers: the page embeds the request origin, so
+		// the two httptest ports would otherwise render different bytes.
+		request.Host = "campfire.test"
+		request.Header.Set("Accept-Encoding", "gzip")
+		request.Header.Set("Cookie", "session_token="+fixture.cookie.Value+"; "+lastRoom)
+		if rangeHeader != "" {
+			request.Header.Set("Range", rangeHeader)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, response.Header.Get("X-Cache"), body
+	}
+
+	for _, test := range []struct {
+		name     string
+		rangeArg string
+	}{
+		{"cache_disabled", ""},
+		{"range_bypass", "bytes=0-3"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assemblies := fixture.on.recordedAssemblies.Load()
+			status, marker, body := fetch(onServer, test.rangeArg)
+			if status != 200 {
+				t.Fatalf("status %d", status)
+			}
+			if len(body) == 0 {
+				t.Fatal("empty body: the chain advertised a receiver with no emitter")
+			}
+			if got := fixture.on.recordedAssemblies.Load(); got == assemblies {
+				t.Fatal("the map path's compressed branch did not run, so the lane framed")
+			}
+			wantStatus, wantMarker, wantBody := fetch(offServer, test.rangeArg)
+			if status != wantStatus || marker != wantMarker || !bytes.Equal(body, wantBody) {
+				at := 0
+				for at < len(body) && at < len(wantBody) && body[at] == wantBody[at] {
+					at++
+				}
+				t.Fatalf("status/marker %d/%q vs %d/%q, body %d bytes vs %d, first diff at %d\n got %q\nwant %q", status, marker, wantStatus, wantMarker, len(body), len(wantBody), at, body[max(0, at-16):min(len(body), at+16)], wantBody[max(0, at-16):min(len(wantBody), at+16)])
+			}
+			if marker != "bypass" {
+				t.Fatalf("X-Cache = %q, want bypass", marker)
+			}
+		})
+	}
 }

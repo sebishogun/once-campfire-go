@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/basecamp/once-campfire-go/internal/httpcompat"
 	"github.com/basecamp/once-campfire-go/internal/zstd"
 )
 
@@ -35,24 +36,33 @@ func publicEncoding(r *http.Request) string {
 	return encodingDecision(r.Header.Get("Accept-Encoding"))
 }
 
-// encodingMemo caches the negotiation decision per Accept-Encoding header
-// value. The value is attacker-chosen, so the table is bounded: at the cap it
-// is cleared wholesale (a cold miss just re-parses that request's header).
+// encodingDecisions is the pair of negotiation answers for one Accept-Encoding
+// value: the public policy's zstd-aware coding and the application's own
+// selector's (the shared httpcompat gzip/identity one). They are computed
+// together because the front consults both on every request — the policy for
+// its own decision, and the precomposed gate for "would the policy transform a
+// body the application leaves unencoded" (precomposed.go) — and both are pure
+// functions of the header value.
+type encodingDecisions struct{ public, app string }
+
+// encodingMemo caches those decisions per Accept-Encoding header value. The
+// value is attacker-chosen, so the table is bounded: at the cap it is cleared
+// wholesale (a cold miss just re-parses that request's header).
 var encodingMemo = struct {
 	mu    sync.Mutex
-	table map[string]string
-}{table: map[string]string{}}
+	table map[string]encodingDecisions
+}{table: map[string]encodingDecisions{}}
 
 const encodingMemoCap = 128
 
-func encodingDecision(header string) string {
+func encodingDecisionsFor(header string) encodingDecisions {
 	encodingMemo.mu.Lock()
 	if decided, ok := encodingMemo.table[header]; ok {
 		encodingMemo.mu.Unlock()
 		return decided
 	}
 	encodingMemo.mu.Unlock()
-	decided := parsePublicEncoding(header)
+	decided := encodingDecisions{public: parsePublicEncoding(header), app: httpcompat.Encoding(header)}
 	encodingMemo.mu.Lock()
 	if len(encodingMemo.table) >= encodingMemoCap {
 		clear(encodingMemo.table)
@@ -61,6 +71,8 @@ func encodingDecision(header string) string {
 	encodingMemo.mu.Unlock()
 	return decided
 }
+
+func encodingDecision(header string) string { return encodingDecisionsFor(header).public }
 
 func parsePublicEncoding(header string) string {
 	quality := func(name string) float64 {
@@ -145,17 +157,38 @@ type publicResponse struct {
 	jitter   []byte
 	err      error
 	final    bool
+	// seam and block are the precomposed surfaces the front's bypass path
+	// installs (precomposed.go): the seam when the front can complete a
+	// precomposed response, the blocking surface when it cannot but this
+	// wrapper would otherwise advertise one. They live inside the wrapper —
+	// allocated per request anyway — so neither costs an allocation, and the
+	// zero values are never used.
+	seam  seamWriter
+	block sealedWriter
 }
 
 // markFinal is the cache's fast-lane signal: the response that follows is a
 // recorded replay with its encoding and headers already settled.
 func (w *publicResponse) markFinal() { w.final = true }
 
+// wouldTransform reports whether the policy would change a body the
+// application leaves unencoded: it selected a coding and the application's own
+// selector — the same httpcompat negotiation front.Deflate and the application
+// share — leaves this response as identity. The two disagree only where the
+// policy knows a coding the application's selector does not (zstd, while the
+// recorded zstd variant is off): there the map path compresses an identity
+// body, so the request must not be framed (precomposed.go).
+func (w *publicResponse) wouldTransform(r *http.Request) bool {
+	return w.selected != "" && encoding(r.Header.Get("Accept-Encoding")) == "identity"
+}
+
 // WritePrecomposed implements the front's precomposed seam on the compression
 // policy: the application hands the loop a finished head block and body, and
 // the wrapper contributes the one header line its WriteHeader contributes to
 // every response it sees — Vary: Accept-Encoding — in the map path's sorted
-// position, then forwards to the next receiver.
+// position, then forwards to the next receiver. The front's gate has already
+// established that this wrapper will not transform the body (wouldTransform),
+// so there is nothing else to apply.
 //
 // Encoding needs no work here: the application pre-encodes the recorded pages
 // (its Content-Encoding is in the block), and WriteHeader's policy is a
