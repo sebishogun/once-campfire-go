@@ -155,6 +155,29 @@ static int fastdb_write_run(sqlite3_stmt *stmt, sqlite3_int64 *last_id, int want
 	sqlite3_reset(stmt);
 	return SQLITE_OK;
 }
+// The WAL hook (Lever 4): SQLite calls fastdb_wal_hook on this connection's
+// thread after each commit, with the WAL's frame count. The count lands in
+// C-allocated memory, so no Go pointer is stored in C and no Go callback,
+// allocation or statement runs on the commit path; the reader loads it later.
+// This is the mechanism the Rust port uses (rusqlite's wal_hook).
+typedef struct fastdb_wal_counter { volatile int frames; } fastdb_wal_counter;
+
+static int fastdb_wal_hook(void *arg, sqlite3 *db, const char *zDb, int nFrame) {
+	(void)db;
+	(void)zDb;
+	((fastdb_wal_counter *)arg)->frames = nFrame;
+	return 0;
+}
+
+// fastdb_install_wal_hook registers the hook from C, so Go never has to name
+// the C function pointer.
+static void fastdb_install_wal_hook(sqlite3 *db, fastdb_wal_counter *counter) {
+	sqlite3_wal_hook(db, fastdb_wal_hook, (void *)counter);
+}
+
+static int fastdb_wal_frames(const fastdb_wal_counter *counter) {
+	return counter->frames;
+}
 */
 import "C"
 
@@ -241,6 +264,8 @@ func (e *Error) Unwrap() error {
 // documents one Conn per goroutine.
 type Conn struct {
 	db *C.sqlite3
+	// wal is the WAL hook's C-allocated frame counter (nil until EnableWALHook).
+	wal *C.fastdb_wal_counter
 }
 
 // OpenReadOnly opens path with SQLITE_OPEN_READONLY. Paths beginning with
@@ -285,10 +310,42 @@ func (c *Conn) Close() error {
 	}
 	rc := C.sqlite3_close_v2(c.db)
 	c.db = nil
+	if c.wal != nil {
+		C.free(unsafe.Pointer(c.wal))
+		c.wal = nil
+	}
 	if rc != C.SQLITE_OK {
 		return &Error{Code: int(rc), Msg: C.GoString(C.sqlite3_errstr(rc))}
 	}
 	return nil
+}
+
+// EnableWALHook installs the WAL hook that records this connection's WAL frame
+// count after each commit. Registering it replaces SQLite's auto-checkpoint
+// hook, which the write lane already turns off (PRAGMA wal_autocheckpoint=0),
+// so no behaviour changes; EnableWALHook must therefore run after the pragmas.
+// It is idempotent.
+func (c *Conn) EnableWALHook() error {
+	if c.wal == nil {
+		c.wal = (*C.fastdb_wal_counter)(C.calloc(1, C.sizeof_fastdb_wal_counter))
+		if c.wal == nil {
+			return &Error{Code: int(C.SQLITE_NOMEM), Msg: "wal hook allocation failed"}
+		}
+	}
+	C.fastdb_install_wal_hook(c.db, c.wal)
+	return nil
+}
+
+// WALFrames returns the WAL's frame count as of the most recent commit on this
+// connection (0 when no hook is installed). The read is one load of C memory
+// the hook wrote; it is exact for the connection's own commits and never older
+// than the last commit by any writer on the same WAL, because the WAL frame
+// count is shared.
+func (c *Conn) WALFrames() int64 {
+	if c.wal == nil {
+		return 0
+	}
+	return int64(C.fastdb_wal_frames(c.wal))
 }
 
 // BusyTimeout sets how long SQLite retries a locked database before returning

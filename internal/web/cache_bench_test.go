@@ -109,8 +109,11 @@ func benchSearchApp(b *testing.B, responseMB string) (*Server, *httptest.Server,
 	}
 	// The checkpointer's PASSIVE checkpoint can move the observed generation
 	// mid-benchmark and invalidate every gated cache, turning a warm run into a
-	// miss; push it past the benchmark so the measured path is the warm one.
+	// miss; push the timed fallback past the benchmark and turn the WAL growth
+	// ceiling off so neither schedules a checkpoint, keeping the measured path
+	// the warm one.
 	b.Setenv("CAMPFIRE_CHECKPOINT_MS", "3600000")
+	b.Setenv("CAMPFIRE_CHECKPOINT_PAGES", "0")
 	b.Setenv("CAMPFIRE_FROZEN_TIME", "2026-01-02T03:04:05Z")
 	root := b.TempDir()
 	dbPath := filepath.Join(root, "test.sqlite3")

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -85,7 +87,67 @@ type messageWriter struct {
 	closed   bool
 	inflight int
 	busy     bool
+	// limit is the WAL-growth threshold in frames (CAMPFIRE_CHECKPOINT_PAGES);
+	// 0 disables it. gate serializes a restart with the background
+	// checkpointer (SQLite allows one checkpoint at a time, and a RESTART that
+	// arrives while another checkpoint holds the lock is refused).
+	//
+	// The counters are the telemetry. restartInvocations counts checks that
+	// decided to try (the threshold was reached, the gate was free and the
+	// backoff window had elapsed); restartAttempts counts those whose lane
+	// actually ran the checkpoint pragmas (an unusable connection returns
+	// attempted=false without running them); restartErrors counts invocations
+	// that returned an error or never attempted; restarts counts attempts
+	// SQLite completed (it reset the WAL); restartIncomplete counts attempts it
+	// refused, reported in the pragma's result row; restartDeferred counts
+	// checks skipped because the checkpointer held the gate or the backoff
+	// window had not elapsed. The stall counters measure the wall time the
+	// writer spent inside an invocation, split into the backfill step
+	// (copy + sync) and the RESTART step (which includes the busy-handler
+	// wait), which is what lets the busy-wait setting be judged separately
+	// from the checkpoint's own I/O.
+	limit               int64
+	gate                *checkpointGate
+	restartInvocations  atomic.Int64
+	restartAttempts     atomic.Int64
+	restartErrors       atomic.Int64
+	restarts            atomic.Int64
+	restartIncomplete   atomic.Int64
+	restartDeferred     atomic.Int64
+	restartStallNanos   atomic.Int64
+	restartStallMax     atomic.Int64
+	restartPassiveNanos atomic.Int64
+	restartRestartNanos atomic.Int64
+	// restartAfter and restartBackoff are the incomplete-attempt backoff. They
+	// are plain fields because walLimit runs only under the writer's busy
+	// protocol (the loop or the single in-line claim), never concurrently.
+	restartAfter   time.Time
+	restartBackoff time.Duration
+	telemetry      bool
 }
+
+// Backoff between restart attempts after SQLite refuses one. A refused restart
+// means a reader is still pinning frames; retrying immediately only stalls the
+// writer again, so attempts are spaced out, doubling to the cap. The attempt
+// itself is bounded by write.CheckpointBusyMS, so a pinned reader can hold the
+// writer for at most that long per attempt, at most once per backoff window.
+const (
+	restartBackoffMin = 25 * time.Millisecond
+	restartBackoffMax = 2 * time.Second
+)
+
+// checkpointGate serializes WAL checkpoints between the write lane and the
+// background checkpointer. SQLite runs one checkpoint at a time: a RESTART
+// that arrives while the checkpointer holds the lock is refused (reported busy
+// in its result row), which would look like a pinned reader. The writer
+// TryLocks so it never queues behind a scheduled checkpoint — it defers to the
+// next drain instead — while the checkpointer Locks, so its checkpoint waits
+// for a bounded writer restart rather than being refused.
+type checkpointGate struct{ mu sync.Mutex }
+
+func (g *checkpointGate) try() bool { return g.mu.TryLock() }
+func (g *checkpointGate) lock()     { g.mu.Lock() }
+func (g *checkpointGate) unlock()   { g.mu.Unlock() }
 
 type messageJob struct {
 	ctx   context.Context
@@ -105,17 +167,127 @@ type messageResult struct {
 	afterErr error
 }
 
-func newMessageWriter(conn laneConn) *messageWriter {
+func newMessageWriter(conn laneConn, limit int64, gate *checkpointGate) *messageWriter {
 	w := &messageWriter{
-		conn:    conn,
-		jobs:    make(chan *messageJob, writeQueueCapacity),
-		wake:    make(chan struct{}, 1),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
-		observe: writerBatchObserver,
+		conn:      conn,
+		jobs:      make(chan *messageJob, writeQueueCapacity),
+		wake:      make(chan struct{}, 1),
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
+		observe:   writerBatchObserver,
+		limit:     limit,
+		gate:      gate,
+		telemetry: checkpointTelemetry(),
 	}
 	go w.loop()
 	return w
+}
+
+// walLimit is the writer's WAL-growth threshold (the Rust port's
+// WAL_LIMIT_PAGES and its writer-side restart_wal, without the per-message
+// hop): once the WAL has grown to limit frames, the writer backfills and
+// restarts it between jobs so the next commit resets the WAL to its first
+// frame. The frame count comes from the lane's WAL hook — the fastdb lane
+// takes its mutex and makes one cgo call — so the check runs once per drain,
+// not per message and not per statement, and does nothing at all when the
+// threshold is disabled or the WAL is below it. The database/sql lane, which
+// has no hook, probes with a throttled NOOP pragma.
+//
+// The threshold is a threshold, not a bound: the check runs after a drain, so
+// a batch (or a run of drains) can overshoot it by whatever it wrote between
+// checks, a single large message can add many frames at once, and a foreign
+// writer's commits are invisible to this connection's hook. There is no
+// backpressure: the writer never refuses or delays a write to stay under the
+// threshold.
+//
+// Nor does the threshold bound growth in every state. A RESTART cannot reset
+// the WAL while a reader holds a WAL read slot, so with continuing writes and
+// a persistently pinned reader the WAL grows without bound until that reader
+// goes away — the backoff deliberately permits that rather than stalling the
+// writer on every drain. The threshold bounds growth only while restarts can
+// complete.
+func (w *messageWriter) walLimit() {
+	if w.limit <= 0 {
+		return
+	}
+	frames := w.conn.walFrames()
+	if frames < w.limit {
+		return
+	}
+	if !w.restartAfter.IsZero() && time.Now().Before(w.restartAfter) {
+		w.restartDeferred.Add(1)
+		return
+	}
+	if w.gate != nil {
+		if !w.gate.try() {
+			w.restartDeferred.Add(1)
+			return
+		}
+		defer w.gate.unlock()
+	}
+	start := time.Now()
+	outcome, err := w.conn.backfillRestart()
+	stall := time.Since(start)
+	w.restartInvocations.Add(1)
+	if outcome.attempted {
+		w.restartAttempts.Add(1)
+	}
+	w.restartStallNanos.Add(stall.Nanoseconds())
+	updateMax(&w.restartStallMax, stall.Nanoseconds())
+	w.restartPassiveNanos.Add(outcome.passiveNanos)
+	w.restartRestartNanos.Add(outcome.restartNanos)
+	if err != nil || !outcome.attempted {
+		// An error, or a lane that could not run the pragmas at all. Neither
+		// reset the WAL, so back off like a refusal.
+		w.restartErrors.Add(1)
+		if err == nil {
+			err = errRestartNotAttempted
+		}
+		slog.Warn("WAL checkpoint restart failed", "error", err, "attempted", outcome.attempted)
+		w.backoffRestart()
+		return
+	}
+	if !outcome.completed {
+		// SQLite refused the restart: a reader is still pinning frames (or
+		// another checkpoint won the lock). The WAL is not reset and the next
+		// commit will not restart it either, so space the next attempt out
+		// instead of stalling the writer again immediately.
+		w.restartIncomplete.Add(1)
+		w.backoffRestart()
+		if w.telemetry {
+			slog.Info("wal restart incomplete",
+				"frames", outcome.frames, "backfilled", outcome.backfilled,
+				"limit", w.limit, "stall_us", stall.Microseconds(), "backoff_ms", w.restartBackoff.Milliseconds())
+		}
+		return
+	}
+	w.restarts.Add(1)
+	w.restartBackoff = 0
+	w.restartAfter = time.Time{}
+	if w.telemetry {
+		slog.Info("wal restart", "frames", frames, "limit", w.limit,
+			"stall_us", stall.Microseconds(),
+			"passive_us", outcome.passiveNanos/1000, "restart_us", outcome.restartNanos/1000)
+	}
+}
+
+// errRestartNotAttempted is reported when a lane returns without running the
+// checkpoint pragmas and without an error (a contract violation): it must not
+// be counted as a restart.
+var errRestartNotAttempted = errors.New("database: WAL restart was not attempted")
+
+// backoffRestart arms the window before the next restart attempt after a
+// refused one, doubling the previous window up to the cap.
+func (w *messageWriter) backoffRestart() {
+	if w.restartBackoff == 0 {
+		w.restartBackoff = restartBackoffMin
+	} else if w.restartBackoff < restartBackoffMax {
+		w.restartBackoff *= 2
+		if w.restartBackoff > restartBackoffMax {
+			w.restartBackoff = restartBackoffMax
+		}
+	}
+	w.restartAfter = time.Now().Add(w.restartBackoff)
 }
 
 func (w *messageWriter) submit(job *messageJob) error {
@@ -174,6 +346,20 @@ func (w *messageWriter) Close() {
 		w.mu.Unlock()
 		close(w.stop)
 		<-w.done
+		if w.telemetry {
+			slog.Info("wal restart summary",
+				"invocations", w.restartInvocations.Load(),
+				"attempts", w.restartAttempts.Load(),
+				"completed", w.restarts.Load(),
+				"incomplete", w.restartIncomplete.Load(),
+				"errors", w.restartErrors.Load(),
+				"deferred", w.restartDeferred.Load(),
+				"stall_ms", w.restartStallNanos.Load()/int64(time.Millisecond),
+				"stall_max_ms", w.restartStallMax.Load()/int64(time.Millisecond),
+				"passive_ms", w.restartPassiveNanos.Load()/int64(time.Millisecond),
+				"restart_ms", w.restartRestartNanos.Load()/int64(time.Millisecond),
+				"limit", w.limit)
+		}
 	})
 }
 
@@ -186,6 +372,10 @@ func (w *messageWriter) loop() {
 			return
 		}
 		w.runBatch(job)
+		// The WAL-growth ceiling is checked with the writer still marked
+		// busy, so an in-line claim cannot start a transaction on the lane
+		// between the commit and the checkpoint.
+		w.walLimit()
 		w.mu.Lock()
 		w.busy = false
 		w.mu.Unlock()
@@ -288,6 +478,10 @@ func (w *messageWriter) runInline(job *messageJob) {
 		}
 		result = messageResult{message: m}
 	}()
+	// The in-line job's transaction has committed (or rolled back) and the
+	// lane connection is free again; the WAL-growth ceiling is checked here
+	// too, so a lone poster's writes are bounded like a batch's.
+	w.walLimit()
 	job.done <- result
 }
 
@@ -542,13 +736,122 @@ func (w *messageWriter) runAfterChunk(batch []*messageJob, results []messageResu
 // checkpointer thread implements.
 type checkpointer struct {
 	conn     *sql.DB
+	path     string
 	interval time.Duration
-	stop     chan struct{}
-	done     chan struct{}
-	once     sync.Once
+	// gate is the checkpoint gate shared with the write lane: SQLite runs one
+	// checkpoint at a time, and a checkpoint that arrives while another holds
+	// the lock is refused. The checkpointer Locks (its scheduled checkpoint
+	// waits for a bounded writer restart); the writer TryLocks.
+	gate *checkpointGate
+	stop chan struct{}
+	done chan struct{}
+	once sync.Once
+	// telemetry gates the per-checkpoint log line (CAMPFIRE_CHECKPOINT_TELEMETRY);
+	// the counters themselves are always kept, and cost one store per checkpoint.
+	telemetry bool
+	stats     checkpointStats
 }
 
-func startCheckpointer(driver, dsn string, interval time.Duration) (*checkpointer, error) {
+// checkpointStats is the checkpointer's telemetry. Every field is an atomic
+// written once per checkpoint, so a reader (the diagnostic accessor or the
+// telemetry log line) never takes a lock and the checkpoint path never pays
+// for the counters. The numbers answer two questions the fixed interval
+// raised: how much of each checkpoint's work is real (frames moved) versus a
+// no-op, and how large the WAL grows between checkpoints (frames/backlog) —
+// the inputs to the workload-aware policy.
+type checkpointStats struct {
+	checkpoints  atomic.Int64 // PASSIVE checkpoints run, final drain included
+	noops        atomic.Int64 // checkpoints that moved no frames
+	moved        atomic.Int64 // frames the latest checkpoint moved
+	movedTotal   atomic.Int64 // frames moved across every checkpoint
+	walFrames    atomic.Int64 // WAL frame count at the latest checkpoint
+	walFramesMax atomic.Int64 // largest WAL frame count seen
+	backfilled   atomic.Int64 // backfilled frames at the latest checkpoint
+	backlog      atomic.Int64 // frames the latest checkpoint left in the WAL
+	backlogMax   atomic.Int64 // largest such backlog
+	busy         atomic.Int64 // checkpoints that could not finish (busy != 0)
+	durNanos     atomic.Int64 // total checkpoint duration
+	durMaxNanos  atomic.Int64 // longest single checkpoint
+	lastUnixNano atomic.Int64 // when the latest checkpoint ran
+	walBytes     atomic.Int64 // -wal file size at the latest checkpoint
+	walBytesMax  atomic.Int64 // largest -wal file size seen
+}
+
+// checkpointSnapshot is a plain-value copy of checkpointStats for assertions
+// and diagnostics.
+type checkpointSnapshot struct {
+	Checkpoints  int64
+	Noops        int64
+	Moved        int64
+	MovedTotal   int64
+	WALFrames    int64
+	WALFramesMax int64
+	Backlog      int64
+	BacklogMax   int64
+	Busy         int64
+	DurNanos     int64
+	DurMaxNanos  int64
+	LastUnixNano int64
+	WALBytes     int64
+	WALBytesMax  int64
+}
+
+func (c *checkpointer) snapshot() checkpointSnapshot {
+	return checkpointSnapshot{
+		Checkpoints:  c.stats.checkpoints.Load(),
+		Noops:        c.stats.noops.Load(),
+		Moved:        c.stats.moved.Load(),
+		MovedTotal:   c.stats.movedTotal.Load(),
+		WALFrames:    c.stats.walFrames.Load(),
+		WALFramesMax: c.stats.walFramesMax.Load(),
+		Backlog:      c.stats.backlog.Load(),
+		BacklogMax:   c.stats.backlogMax.Load(),
+		Busy:         c.stats.busy.Load(),
+		DurNanos:     c.stats.durNanos.Load(),
+		DurMaxNanos:  c.stats.durMaxNanos.Load(),
+		LastUnixNano: c.stats.lastUnixNano.Load(),
+		WALBytes:     c.stats.walBytes.Load(),
+		WALBytesMax:  c.stats.walBytesMax.Load(),
+	}
+}
+
+// checkpointTelemetry reads CAMPFIRE_CHECKPOINT_TELEMETRY (default off): on
+// logs one line per checkpoint and a summary at shutdown, so a workload run
+// can be judged from the application log. It changes no behaviour.
+func checkpointTelemetry() bool {
+	raw := os.Getenv("CAMPFIRE_CHECKPOINT_TELEMETRY")
+	if raw == "" {
+		return false
+	}
+	on, valid := parseWriteQueue(raw)
+	if !valid {
+		slog.Warn("invalid CAMPFIRE_CHECKPOINT_TELEMETRY; keeping telemetry off", "value", raw)
+		return false
+	}
+	return on
+}
+
+// updateMax raises *dst to v when v is larger (lock-free max).
+func updateMax(dst *atomic.Int64, v int64) {
+	for {
+		cur := dst.Load()
+		if v <= cur || dst.CompareAndSwap(cur, v) {
+			return
+		}
+	}
+}
+
+// walFileBytes reports the -wal file's size, the WAL's high-water mark on
+// disk (journal_size_limit stays -1, so a checkpoint does not truncate it).
+// A missing WAL is zero.
+func walFileBytes(path string) int64 {
+	if info, err := os.Stat(path + "-wal"); err == nil {
+		return info.Size()
+	}
+	return 0
+}
+
+func startCheckpointer(driver, dsn, path string, interval time.Duration, gate *checkpointGate) (*checkpointer, error) {
 	conn, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, err
@@ -559,13 +862,28 @@ func startCheckpointer(driver, dsn string, interval time.Duration) (*checkpointe
 		conn.Close()
 		return nil, err
 	}
-	c := &checkpointer{conn: conn, interval: interval, stop: make(chan struct{}), done: make(chan struct{})}
+	c := &checkpointer{
+		conn:      conn,
+		path:      path,
+		interval:  interval,
+		gate:      gate,
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
+		telemetry: checkpointTelemetry(),
+	}
 	go c.loop()
 	return c, nil
 }
 
 func (c *checkpointer) loop() {
 	defer close(c.done)
+	if c.interval <= 0 {
+		// The timed fallback is off (CAMPFIRE_CHECKPOINT_MS=0): the write
+		// lane's growth ceiling schedules checkpoints until the final drain
+		// at Close.
+		<-c.stop
+		return
+	}
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 	for {
@@ -579,13 +897,65 @@ func (c *checkpointer) loop() {
 }
 
 func (c *checkpointer) passive() {
+	// One checkpoint at a time: the gate keeps this from being refused by a
+	// write-lane restart (and vice versa). The writer TryLocks, so it never
+	// queues here; this Lock waits at most one bounded restart attempt.
+	if c.gate != nil {
+		c.gate.lock()
+		defer c.gate.unlock()
+	}
+	start := time.Now()
+	previous := c.stats.lastUnixNano.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// PASSIVE never blocks: frames a reader is using are skipped and picked up
-	// on the next tick. The row reports (busy, log pages, checkpointed pages).
+	// on the next tick. The row reports (busy, log pages, checkpointed pages):
+	// log is the WAL's frame count and checked the frames backfilled so far in
+	// this WAL generation, so their difference is the backlog a reader is
+	// still pinning and the growth since the last checkpoint is the change in
+	// checked.
 	var busy, log, checked int
-	if err := c.conn.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &log, &checked); err != nil {
+	err := c.conn.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &log, &checked)
+	elapsed := time.Since(start)
+	now := start.UnixNano()
+	previousBackfilled := c.stats.backfilled.Load()
+	moved := int64(checked) - previousBackfilled
+	if moved < 0 {
+		// The WAL restarted (mxFrame and the backfill count dropped), so this
+		// checkpoint's work is the whole backfill count.
+		moved = int64(checked)
+	}
+	c.stats.checkpoints.Add(1)
+	if moved == 0 {
+		c.stats.noops.Add(1)
+	}
+	c.stats.moved.Store(moved)
+	c.stats.movedTotal.Add(moved)
+	c.stats.walFrames.Store(int64(log))
+	updateMax(&c.stats.walFramesMax, int64(log))
+	c.stats.backfilled.Store(int64(checked))
+	c.stats.backlog.Store(int64(log - checked))
+	updateMax(&c.stats.backlogMax, int64(log-checked))
+	if busy != 0 {
+		c.stats.busy.Add(1)
+	}
+	c.stats.durNanos.Add(elapsed.Nanoseconds())
+	updateMax(&c.stats.durMaxNanos, elapsed.Nanoseconds())
+	c.stats.lastUnixNano.Store(now)
+	wal := walFileBytes(c.path)
+	c.stats.walBytes.Store(wal)
+	updateMax(&c.stats.walBytesMax, wal)
+	if err != nil {
 		slog.Warn("WAL checkpoint failed", "error", err)
+	}
+	if c.telemetry {
+		since := int64(0)
+		if previous != 0 {
+			since = (now - previous) / int64(time.Millisecond)
+		}
+		slog.Info("wal checkpoint",
+			"frames", log, "moved", moved, "backlog", log-checked, "busy", busy,
+			"dur_us", elapsed.Microseconds(), "since_ms", since, "wal_kb", wal/1024)
 	}
 }
 
@@ -594,6 +964,16 @@ func (c *checkpointer) Close() {
 		close(c.stop)
 		<-c.done
 		c.passive() // one final checkpoint after the writer drained
+		if c.telemetry {
+			s := c.snapshot()
+			slog.Info("wal checkpoint summary",
+				"checkpoints", s.Checkpoints, "noops", s.Noops,
+				"frames_moved", s.MovedTotal, "wal_frames_max", s.WALFramesMax,
+				"backlog_max", s.BacklogMax, "busy", s.Busy,
+				"dur_total_ms", s.DurNanos/int64(time.Millisecond),
+				"dur_max_ms", s.DurMaxNanos/int64(time.Millisecond),
+				"wal_max_kb", s.WALBytesMax/1024)
+		}
 		c.conn.Close()
 	})
 }

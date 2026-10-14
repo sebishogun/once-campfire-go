@@ -44,6 +44,9 @@ func seedWriter(t *testing.T, tag string) *DB {
 	t.Helper()
 	t.Setenv("CAMPFIRE_WRITE_QUEUE", "on")
 	t.Setenv("CAMPFIRE_CHECKPOINT_MS", "3600000")
+	// The WAL growth ceiling off too: a checkpoint mid-test would add
+	// statements to the pinned stream.
+	t.Setenv("CAMPFIRE_CHECKPOINT_PAGES", "0")
 	t.Setenv("CAMPFIRE_FROZEN_TIME", "2026-01-02T03:04:05Z")
 	path := filepath.Join(t.TempDir(), tag+".sqlite3")
 	d, err := Open(path, 4)

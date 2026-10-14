@@ -3,7 +3,13 @@ package database
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"strconv"
+	"sync"
+	"time"
+
+	"github.com/basecamp/once-campfire-go/internal/fastdb/write"
 )
 
 // The write lane's statement surface (ENGINE-55): the message create
@@ -95,6 +101,39 @@ type laneConn interface {
 	// drained and the after-commit count reached zero. The database/sql
 	// lane's pool is closed through DB.Close like every other pool.
 	close() error
+	// walFrames reports the WAL's frame count as of the lane connection's
+	// most recent commit (0 when unavailable). It is not free: the fastdb lane
+	// takes the connection's Go mutex and makes one cgo call (off the commit
+	// path, once per drain); the database/sql lane probes PRAGMA
+	// wal_checkpoint(NOOP), which does no work, at most once per
+	// checkpointProbe. It is the writer's WAL-growth signal.
+	walFrames() int64
+	// backfillRestart runs PASSIVE then RESTART on the lane connection,
+	// between transactions: PASSIVE backfills every frame a reader is not
+	// pinning, and RESTART waits for the readers so the next write resets
+	// the WAL. The outcome reports whether SQLite actually completed the
+	// restart — it reports a refused checkpoint in the pragma's result row,
+	// not as an execution error — and the attempt runs with a bounded busy
+	// timeout (write.CheckpointBusyMS) so a pinned reader cannot stall the
+	// writer for the connection's full busy timeout.
+	backfillRestart() (checkpointOutcome, error)
+}
+
+// checkpointOutcome is one WAL restart attempt's result. attempted is false
+// only when the lane could not run the pragmas at all; completed is false when
+// SQLite reported the checkpoint incomplete (a reader pinning frames, or
+// another checkpoint holding the lock), which is the case the writer must
+// count separately from a restart that actually reset the WAL. passiveNanos
+// and restartNanos split the attempt's wall time into the backfill step
+// (page copying and its filesystem sync) and the RESTART step (which includes
+// the busy-handler wait).
+type checkpointOutcome struct {
+	attempted    bool
+	completed    bool
+	frames       int64
+	backfilled   int64
+	passiveNanos int64
+	restartNanos int64
 }
 
 // sqlLaneConn is the database/sql lane: the existing write pool, whose
@@ -102,7 +141,24 @@ type laneConn interface {
 // exactly as before.
 type sqlLaneConn struct {
 	db *sql.DB
+	// probeMu guards the WAL probe's throttle state. The database/sql lane
+	// has no WAL hook, so it reads the frame count with
+	// PRAGMA wal_checkpoint(NOOP) — a statement that does no work — and
+	// throttles it to checkpointProbe so a burst of drains cannot turn the
+	// limit check into a per-post statement.
+	probeMu   sync.Mutex
+	probeLast time.Time
+	probeVal  int64
+	// restoreStmt overrides the statement that restores the pool's normal busy
+	// timeout after a checkpoint attempt (empty means stmtSQLRestoreBusy). It
+	// exists so a test can make the restore fail and prove the connection is
+	// discarded rather than returned with the checkpoint's timeout still set.
+	restoreStmt string
 }
+
+// checkpointProbe bounds how often the database/sql lane reads the WAL frame
+// count with the NOOP pragma.
+const checkpointProbe = 5 * time.Millisecond
 
 func (c *sqlLaneConn) begin(ctx context.Context) (laneTx, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
@@ -113,6 +169,88 @@ func (c *sqlLaneConn) begin(ctx context.Context) (laneTx, error) {
 }
 
 func (c *sqlLaneConn) close() error { return nil }
+
+func (c *sqlLaneConn) walFrames() int64 {
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
+	if now := time.Now(); now.Sub(c.probeLast) < checkpointProbe {
+		return c.probeVal
+	}
+	var busy, log, checked int
+	if err := c.db.QueryRow("PRAGMA wal_checkpoint(NOOP)").Scan(&busy, &log, &checked); err != nil {
+		return c.probeVal
+	}
+	c.probeLast = time.Now()
+	c.probeVal = int64(log)
+	return c.probeVal
+}
+
+// The database/sql lane's checkpoint statements are prebuilt for the same
+// reason as the fastdb lane's: the pool prepares per text.
+var (
+	stmtSQLCheckpointBusy = "PRAGMA busy_timeout = " + strconv.Itoa(write.CheckpointBusyMS)
+	stmtSQLRestoreBusy    = "PRAGMA busy_timeout = " + strconv.Itoa(write.BusyTimeoutMS)
+)
+
+// backfillRestart mirrors the fastdb lane's CheckpointRestart on the write
+// pool. It reserves one pool connection for the whole sequence: the busy
+// timeout is a property of the connection, and SetMaxOpenConns(1) serializes
+// individual operations without reserving the connection across them, so
+// without the reservation an unrelated borrower (a session or account write, a
+// queued after-commit statement) could run between the steps and inherit the
+// checkpoint's 250 ms timeout. The timeout is restored on the same connection
+// before it goes back to the pool; if the restore fails, the connection is
+// discarded rather than returned misconfigured.
+func (c *sqlLaneConn) backfillRestart() (checkpointOutcome, error) {
+	ctx := context.Background()
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
+		return checkpointOutcome{}, err
+	}
+	out, err := c.backfillRestartOn(ctx, conn)
+	restore := c.restoreStmt
+	if restore == "" {
+		restore = stmtSQLRestoreBusy
+	}
+	if _, restoreErr := conn.ExecContext(ctx, restore); restoreErr != nil {
+		// Never hand a connection whose busy timeout is still the checkpoint's
+		// back to the pool: Raw with driver.ErrBadConn discards it, and the
+		// pool opens a fresh one (with the DSN's timeout) on the next use.
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		if err == nil {
+			err = restoreErr
+		}
+		return out, err
+	}
+	if closeErr := conn.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	return out, err
+}
+
+func (c *sqlLaneConn) backfillRestartOn(ctx context.Context, conn *sql.Conn) (checkpointOutcome, error) {
+	if _, err := conn.ExecContext(ctx, stmtSQLCheckpointBusy); err != nil {
+		return checkpointOutcome{}, err
+	}
+	out := checkpointOutcome{attempted: true}
+	passiveStart := time.Now()
+	if _, err := conn.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+		out.passiveNanos = time.Since(passiveStart).Nanoseconds()
+		return out, err
+	}
+	out.passiveNanos = time.Since(passiveStart).Nanoseconds()
+	restartStart := time.Now()
+	var busy, log, checked int64
+	err := conn.QueryRowContext(ctx, "PRAGMA wal_checkpoint(RESTART)").Scan(&busy, &log, &checked)
+	out.restartNanos = time.Since(restartStart).Nanoseconds()
+	if err != nil {
+		return out, err
+	}
+	out.completed = busy == 0
+	out.frames = log
+	out.backfilled = checked
+	return out, nil
+}
 
 // sqlLaneTx adapts *sql.Tx to the job and lane surfaces with the same calls
 // the create path always made — same SQL texts, same bind order, same

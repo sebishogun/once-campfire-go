@@ -42,6 +42,12 @@ func (c *countingLane) begin(ctx context.Context) (laneTx, error) {
 
 func (c *countingLane) close() error { return c.inner.close() }
 
+func (c *countingLane) walFrames() int64 { return c.inner.walFrames() }
+
+func (c *countingLane) backfillRestart() (checkpointOutcome, error) {
+	return c.inner.backfillRestart()
+}
+
 func (c *countingLane) counts() (begin, commit, savepoint, rollbackTo int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
