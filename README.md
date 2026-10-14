@@ -73,10 +73,11 @@ authorization SQL at all; a cached result never outlives its generations — ses
 (login/logout/ban/deactivation), membership and room-visibility writes, and bans all bump a
 generation after commit, and the next publication re-queries and excludes the revoked
 client. Recipients are snapshotted under the hub read lock into a pre-sized slice and
-authorized/delivered without the lock. Deliberate difference, the same single-process limit
-as the sidebar/search caches: authorization changed by SQL outside the audited write
-helpers (other processes, direct writes) is picked up on restart or at the next generation
-bump, not live. The write-helper audit is pinned in `internal/database/versions_test.go`.
+authorized/delivered without the lock. Publication authorization also carries the
+pinned reader's `PRAGMA data_version` generation, so foreign commits invalidate
+the memo even without a local counter bump. The idle heartbeat's local-counter
+gate is a separate mechanism. The write-helper audit is pinned in
+`internal/database/versions_test.go`.
 Logout goes through `DB.DeleteSession` so the session deletion bumps the generation before
 the caller touches the hub. Sidebar fragments are keyed by a version, not by their content: an
 in-process registry (seeded once from the database on first use; bumped after every sidebar-visible
@@ -84,8 +85,9 @@ write — room create/rename/delete, membership join/leave/removal, unread chang
 create and presence, user rename/avatar/role, direct-placeholder transitions, account room
 restrictions) yields the key without reading any room, membership or placeholder rows, so a cache
 hit serves the fragment with no row reads and no page setup, and the entry accounting is the same
-bounded LRU as every other fragment. The registry is per process: writes from another process are
-picked up on restart, not live (the same documented limit as the message-fragment caches). The
+bounded LRU as every other fragment. The registry is per process, but HTTP cache keys also
+carry the request's observed generation from pinned `PRAGMA data_version`: commits from
+another connection invalidate sidebar, search, message pieces, reference windows and read caches. The
 write-helper audit is pinned in `internal/database/versions_test.go`, which fails when a
 sidebar-visible write helper stops bumping the version. No runtime gate backs the version keys:
 the before/after A/B compares binaries (`bench/application --baseline-go`), so a gate would only
@@ -154,8 +156,9 @@ request learns its message only after both phases — the response is never sent
 row stays, the way the Rust port's `after_commit` hooks shape the same Rails callbacks. The writer
 connection disables SQLite's
 auto-checkpoint (`PRAGMA wal_autocheckpoint=0`) and a separate connection runs
-`PRAGMA wal_checkpoint(PASSIVE)` every `CAMPFIRE_CHECKPOINT_MS` milliseconds (default 1000), so no
-write ever waits for the checkpoint's WAL and database fsyncs. Durability does not move: the
+`PRAGMA wal_checkpoint(PASSIVE)` every `CAMPFIRE_CHECKPOINT_MS` milliseconds (default 1000).
+Scheduled checkpoint fsyncs run off the writer; threshold PASSIVE/RESTART runs before
+the next batch is accepted and can delay queued writers. Durability does not move: the
 database stays WAL mode with `synchronous=NORMAL` and the default `journal_size_limit` (unset,
 -1), commits are never fsynced, and what committed since the last checkpoint can be lost to a power
 failure (never to a process crash); every checkpoint syncs the WAL, as the auto-checkpoint did. Two
@@ -284,12 +287,13 @@ page's ETag covers the cache-stable pieces only, so it no longer moves with the 
 re-hash the shell on every request. `CAMPFIRE_MESSAGE_REFS_CACHE_MB` sizes the message-page
 reference cache (default 8; `0` disables it, restoring the per-request 40-row scan): the room and
 messages pages both re-run the same `MessagePageReferences` scan on every request, so its result —
-the reference list (message id, room, update stamp) plus the messages-page validator (ETag,
-Last-Modified, Cache-Control, both Turbo-Frame variants, byte-identical to the former per-request
-rebuild) — is cached keyed by `(room, room updated_at, anchor, direction)` and served warm at one
-in-memory lookup with no scan (measured 48 ns/op, 0 allocs, vs 20.8 µs/op on the scan path).
-Validation is the key itself: every message create/edit/delete/boost writes `rooms.updated_at`, so
-a changed room version misses and refills. A hit returns only references; full message rows (rich
+the reference list (message id, room, update stamp) — is cached keyed by
+`(observed generation, room, room updated_at, anchor, direction)` and served warm at one
+in-memory lookup with no scan. The former timestamp-only key measured 48 ns/op,
+0 allocs, versus 20.8 µs/op for scanning; that is a historical measurement.
+External inserts/deletes miss even when the room timestamp is preserved. References
+do not validate rendered bytes: pagination computes its ETag after rendering.
+A hit returns only references; full message rows (rich
 text, author, boosts) hydrate exactly where they always did, on a per-message fragment cache miss,
 which also keeps the around/after pages on the same hydration path the before pages always used.
 The cache is bounded by bytes and by 4096 entries, pruned oldest-first to 75% of the budget like
@@ -297,7 +301,7 @@ the fragment cache; a single window never exceeds a quarter of the budget.
 `CAMPFIRE_RESPONSE_CACHE_MB` sizes the whole-response cache (default 64, the published topology of the
 C reference's response-body cache; `0` disables storage and every lookup misses, leaving the
 finer-grained caches below in charge — byte-identical). It stores the completed HTML responses of the
-room and messages-page routes — the exact wire bytes a fresh render produced (the assembled gzip
+room, messages-page and search routes — the exact wire bytes a fresh render produced (the assembled gzip
 member for gzip clients, the joined pieces for identity clients) with their entity headers. A
 warm request re-checks the session and the observed database generation, then serves the stored body:
 no message reads, no template execution, no per-request compression or assembly. The key covers the
@@ -305,11 +309,12 @@ generation (`PRAGMA data_version` on the pinned reader), the authenticated user,
 form, the identity headers (cookie, Accept, Turbo-Frame, user agent, origin), the negotiated encoding
 and the process revision, so a hit is byte-identical to a fresh render by construction and a commit —
 local or external — moves the generation and misses. A session flash renders fresh and never stores.
-Search and sidebar are served by their own warm caches (the search result cache and the sidebar
-whole-page cache) rather than this one: the response-cache round measured slower than those paths.
+Search participates in this round, with its result cache serving response-cache misses.
+Sidebar retains its own generation-gated whole-page cache.
 Entries are LRU, pruned to fit the budget, and a single entry is capped at an eighth of it. The
-single-process observation limit is the same generation gate the fragment and piece caches carry:
-writes are observed by generation alone and an un-audited write is picked up on restart, not live.
+generation gate observes local and external commits through the pinned `PRAGMA data_version`
+reader. Read and reference caches retain the pre-read generation through admission;
+an unavailable observation bypasses them. This is not a transaction snapshot across all page reads.
 `CAMPFIRE_FAST_RENDER` (default `on`; also accepts `true`/`1` and `off`/`false`/`0`, warning on anything else) compiles the `message-uncached` fragment — with
 its `message-actions`, `presentation`, `boosts` and `boost` partials — once at startup into a flat
 program of literal and field ops (`internal/web/fastrender.go`): the compiled renderer appends the
@@ -369,7 +374,10 @@ passes a pre-encoded body through instead of starting its own gzip member after 
 header emitted at close had tripped the owned loop's Content-Length guard and ended the keep-alive
 connection after every framed gzip response.
 
-## Validation
+## Historical validation
+
+These browser/container/interoperability runs describe the revisions recorded in
+`plans/validation.md`; final coherency-fix checks are recorded separately there.
 
 ```sh
 bin/check                              # gofmt, assets, vet, all tests with the race detector

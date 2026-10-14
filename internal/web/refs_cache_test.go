@@ -236,36 +236,21 @@ func TestMessageRefsCacheInvalidation(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Validator byte parity with the removed per-request messageFreshness.
 
-// TestMessageValidatorParity reconstructs the former messageFreshness ETag
-// computation inline and asserts the cached validator keeps that ETag record
-// (both Turbo-Frame variants); since upstream b345ea4 the page carries no
+// TestMessageValidatorParity pins the rendered-body ETag contract;
+// both Turbo-Frame variants share their representation. The page carries no
 // Last-Modified and If-Modified-Since cannot 304 it — the rendered
 // representation defines freshness, timestamps alone miss external edits and
 // association changes.
 func TestMessageValidatorParity(t *testing.T) {
 	root := time.Date(2026, 10, 6, 12, 30, 45, 123456000, time.UTC)
-	refs := []database.Message{
-		{ID: 11, UpdatedAt: root},
-		{ID: 22, UpdatedAt: root.Add(2 * time.Second)},
-		{ID: 33, UpdatedAt: root.Add(-time.Minute)},
+	rendered := []byte(`<article><b>Author</b>message</article>`)
+	v := messageValidatorOf(rendered)
+	hash := sha256.Sum256(rendered)
+	if want := fmt.Sprintf("W/\"%x\"", hash[:16]); v.etag != want {
+		t.Fatalf("etag %q vs rendered %q", v.etag, want)
 	}
-	// The former implementation's ETag, verbatim logic from conditional.go.
-	legacy := func(frame bool) string {
-		parts := make([]string, 0, len(refs)+2)
-		for _, m := range refs {
-			parts = append(parts, fmt.Sprintf("messages/%d-%s", m.ID, m.UpdatedAt.UTC().Format("20060102150405.000000")))
-			parts[len(parts)-1] = strings.ReplaceAll(parts[len(parts)-1], ".", "")
-		}
-		if frame {
-			parts = append(parts, "frame")
-		}
-		parts = append(parts, "messages/index")
-		hash := sha256.Sum256([]byte(strings.Join(parts, "/")))
-		return fmt.Sprintf("W/\"%x\"", hash[:16])
-	}
-	v := messageValidatorOf(refs)
-	if v.etag != legacy(false) {
-		t.Fatalf("etag %q vs legacy %q", v.etag, legacy(false))
+	if v.etag == messageValidatorOf([]byte(`<article><b>Renamed</b>message</article>`)).etag {
+		t.Fatal("author rename did not change rendered validator")
 	}
 	// The header dance must reproduce the surviving contract record-for-record.
 	// The rendered frame equals the document on this page, so the validator
@@ -939,7 +924,7 @@ func TestMessageRefsCacheBounds(t *testing.T) {
 	key := func(room, version, anchor int64, direction string) messageRefsKey {
 		return messageRefsKey{room: room, version: version, anchor: anchor, direction: direction}
 	}
-	value := messageValidatorOf(makeRefs(2))
+	value := messageValidator{}
 
 	// Disabled cache: nothing stores, nothing hits.
 	disabled := newMessageRefsCache(0)

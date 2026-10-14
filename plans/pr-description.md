@@ -5,7 +5,7 @@
 
 This branch adds a measured performance engine on top of the port — owned
 HTTP/1.1 loop, direct SQLite read/write lanes, generation-checked
-whole-response cache, batched write path with bounded WAL, cable wake path,
+whole-response cache, batched write path with a WAL restart threshold, cable wake path,
 compiled renderer — with the same schema, storage keys, password hashes and
 Rails-signed sessions. Every fast path has a rollback switch.
 
@@ -40,7 +40,7 @@ is against a validated baseline. Raw receipts:
 | Search | 171,762 | **198,252** | **1.15×** |
 | Post a message | 7,449 | **17,994** | **2.42×** |
 
-Ahead of C on messages, search and post; room and sidebar are near parity.
+Ahead of C on messages, search and post; C is faster on room and sidebar by median.
 
 ## How
 
@@ -57,7 +57,7 @@ Ahead of C on messages, search and post; room and sidebar are near parity.
   single-transition version and session reads; write lane with a batched
   after-commit phase (commits per message drop from ~1.0 to ~0.01 at batch
   scale), group commit, and checkpoints off the writer.
-- **Bounded WAL** (`CAMPFIRE_CHECKPOINT_PAGES`, 10,000 frames): a C WAL hook
+- **WAL restart threshold** (`CAMPFIRE_CHECKPOINT_PAGES`, 10,000 frames): a C WAL hook
   tracks frames; the writer runs PASSIVE + RESTART between jobs, so a busy post
   workload holds the WAL at ~40 MB instead of growing unbounded (measured
   4.6 GB in 10 s without it). Refused restarts are counted, backed off and
@@ -68,26 +68,38 @@ Ahead of C on messages, search and post; room and sidebar are near parity.
   and one bulk authorization, with removed members skipped and revoked
   sessions stopped.
 - **Runtime**: PGO build (`cmd/campfire/default.pgo`, `-pgo=auto`, falls back
-  cleanly when absent) and `CAMPFIRE_GOGC=200` as the shipped default
+  cleanly when absent; benefit undetected, mechanism only) and `CAMPFIRE_GOGC=200` as the Docker-image default only
   (rollback `CAMPFIRE_GOGC=100`); measured GC CPU per request halves, total
   CPU per request −4.9% on the read workload for +13 MiB peak RSS.
 
 ## Correctness
 
-- Full `-race` suite (`bin/check`), browser workflows, and the screen parity
+- Full `-race` suite; historical browser workflows and the screen parity
   inventory: **178/178 applicable cells match the reference** on pixels and
   accessibility (192 cells, 0 errors).
 - Go↔Rust interoperability: Rust-issued sessions accepted by Go and vice
   versa; Rust renders and searches messages Go wrote (FTS).
-- Every cache observes external SQLite commits (`PRAGMA data_version` on a
-  pinned reader) and re-checks authorization where it serves user data;
-  admission happens only under the pre-read generation. Foreign-writer
-  revocation regressions exist for the search cache and the cable memo.
+- HTTP response, page, fragment, reference-window and four read caches carry
+  external SQLite commits observed by `PRAGMA data_version` on a pinned reader.
+  Admission retains the pre-read generation; membership checks stay fresh.
+  Pagination ETags derive from the complete rendered representation, including
+  related-user changes, rather than message IDs and timestamps.
+  Cable publication authorization also gates its memo on the pinned-reader
+  generation; the idle heartbeat's local-counter gate is separate.
 - The write path keeps primary-commit-before-callback semantics, per-job
   savepoint isolation, cancellation survival and a shutdown drain; WAL/NORMAL
   durability is unchanged.
 
 ## Measurement notes and limitations
+
+- Warm, single-viewer, tmpfs databases, c=16; three rounds are limited replication.
+- WAL threshold is not a hard bound: persistent readers can prevent restart.
+  Threshold PASSIVE/RESTART can delay queued writers before accepting the next batch.
+- Queued primary commit and after-phase index/unread work have a process-crash window.
+- WAL `synchronous=NORMAL` can lose commits since the last checkpoint on power loss.
+- PGO benefit was undetected; GOGC=200 trades memory for CPU and is a Docker-image default only.
+- Screen/accessibility parity is not full DOM or wire parity. Historical browser
+  results above are not a rerun against these final cache fixes.
 
 - The first run of this comparison accidentally used Rust's pre-response-cache
   revision (`743aa84`, whose numbers match the *old* published table within

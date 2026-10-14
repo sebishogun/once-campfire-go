@@ -16,7 +16,10 @@ import (
 // membership check, the account row render reads on every page, the
 // room-page invitation probe, and home/search's original-room fallback.
 //
-// Every entry is keyed by the version counters its data depends on, so a hit
+// Every entry is keyed by the pre-read observed SQLite generation as well as
+// the local version counters below. External commits therefore miss even when
+// timestamps and local counters remain unchanged. Admission keeps that original
+// generation; unavailable observations bypass the caches. A hit
 // is validated by key equality alone and nothing is invalidated by hand:
 //
 //   - Room rows (rooms JOIN memberships) depend on the rooms and memberships
@@ -44,7 +47,7 @@ import (
 // The counters are deliberately coarse (any write in the covered tables
 // misses every entry of that kind), which is the completeness guarantee: a
 // cache hit can only be served for a version that every relevant write has
-// moved past. Poisoning tests pin the overwrite contract (an entry carries
+// moved past, together with the observed generation for foreign writes. Poisoning tests pin the overwrite contract (an entry carries
 // its key and a lookup verifies it, so a digest/key collision reads as a
 // miss), and the invalidation tests run real write helpers and assert the
 // next lookup misses.
@@ -66,10 +69,11 @@ const (
 // role per kind (see key builders below); version carries the registry
 // counter and v2 the second counter where a read depends on two.
 type readCacheKey struct {
-	kind    readCacheKind
-	a, b    int64
-	version uint64
-	v2      int64
+	generation uint64
+	kind       readCacheKind
+	a, b       int64
+	version    uint64
+	v2         int64
 }
 
 // readCacheEntry is one cached value plus the key it was stored under (so a
@@ -170,14 +174,15 @@ func (c *readCache) store(key readCacheKey, makeEntry func() (readCacheEntry, in
 // as before; the row lookup here is by id (the membership predicate has
 // already run and cannot change the row).
 func (s *Server) roomRowCached(c *fastdb.Conn, ctx context.Context, user, id int64) (database.Room, error) {
-	if s.readCache == nil {
+	generation, observable := s.contextGeneration(ctx)
+	if s.readCache == nil || !observable {
 		return s.roomRow(c, ctx, user, id)
 	}
 	version, err := s.DB.SidebarVersion(ctx)
 	if err != nil {
 		return s.roomRow(c, ctx, user, id)
 	}
-	key := readCacheKey{kind: kindRoom, a: user, b: id, version: version, v2: s.DB.CorpusVersion()}
+	key := readCacheKey{generation: generation, kind: kindRoom, a: user, b: id, version: version, v2: s.DB.CorpusVersion()}
 	if err := s.membershipCheck(c, ctx, user, id); err != nil {
 		return database.Room{}, err
 	}
@@ -230,14 +235,15 @@ func (s *Server) roomByID(c *fastdb.Conn, ctx context.Context, id int64) (databa
 // valid for the account state this request would have read. Only ErrNoRows is
 // cached as not-found; any other error falls through un-cached.
 func (s *Server) accountCached(ctx context.Context) (database.Account, error) {
-	if s.readCache == nil {
+	generation, observable := s.contextGeneration(ctx)
+	if s.readCache == nil || !observable {
 		return s.DB.Account(ctx)
 	}
 	version, err := s.DB.SidebarVersion(ctx)
 	if err != nil {
 		return s.DB.Account(ctx)
 	}
-	key := readCacheKey{kind: kindAccount, a: s.logoVersion.Load(), version: version}
+	key := readCacheKey{generation: generation, kind: kindAccount, a: s.logoVersion.Load(), version: version}
 	if entry, ok := s.readCache.lookup(key); ok {
 		if !entry.found {
 			return database.Account{}, sql.ErrNoRows
@@ -264,10 +270,11 @@ func (s *Server) accountCached(ctx context.Context) (database.Account, error) {
 // versions that every room-set and message-count change moves, so a hit is
 // valid for the probe's inputs this request would have read.
 func (s *Server) invitationCached(c *fastdb.Conn, ctx context.Context, room int64) (bool, error) {
-	if s.readCache == nil {
+	generation, observable := s.contextGeneration(ctx)
+	if s.readCache == nil || !observable {
 		return s.invitation(c, ctx, room)
 	}
-	key := readCacheKey{kind: kindInvitation, a: room, version: uint64(s.DB.CorpusVersion()), v2: s.DB.MembershipVersion()}
+	key := readCacheKey{generation: generation, kind: kindInvitation, a: room, version: uint64(s.DB.CorpusVersion()), v2: s.DB.MembershipVersion()}
 	if entry, ok := s.readCache.lookup(key); ok {
 		return entry.invitation, nil
 	}
@@ -285,14 +292,15 @@ func (s *Server) invitationCached(c *fastdb.Conn, ctx context.Context, room int6
 // read cache when it is enabled. The key carries the sidebar version that
 // every room/membership write moves.
 func (s *Server) originalRoomCached(ctx context.Context, user int64) (int64, error) {
-	if s.readCache == nil {
+	generation, observable := s.contextGeneration(ctx)
+	if s.readCache == nil || !observable {
 		return s.DB.OriginalRoom(ctx, user)
 	}
 	version, err := s.DB.SidebarVersion(ctx)
 	if err != nil {
 		return s.DB.OriginalRoom(ctx, user)
 	}
-	key := readCacheKey{kind: kindOriginalRoom, a: user, version: version}
+	key := readCacheKey{generation: generation, kind: kindOriginalRoom, a: user, version: version}
 	if entry, ok := s.readCache.lookup(key); ok {
 		if !entry.found {
 			return 0, sql.ErrNoRows

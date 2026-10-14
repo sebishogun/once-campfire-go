@@ -71,10 +71,8 @@ type cachedResponse struct {
 	// property of the request (the front's cache eligibility) and not of the
 	// stored bytes.
 	xcache string
-	// validator304 records that this route answers its conditional requests
-	// from its own validator before rendering (the messages page): the fresh
-	// 304 is that validator's head, not the recorded no-cache block. The hit
-	// reproduces the same flavor.
+	// validator304 records the map-rendered flavor of conditional responses,
+	// whose fresh 304 carries validator headers instead of the recorded block.
 	validator304 bool
 	// etag and lastModified are the stored validator, captured once at
 	// admission so a hit's conditional check needs no string->[]byte or
@@ -85,7 +83,8 @@ type cachedResponse struct {
 	// content coding, nil for identity. A replay puts it on the live map (see
 	// setMapEncoding). It is shared read-only: len == cap == 1, so a Header.Add
 	// on the key allocates instead of writing into the entry.
-	encodingValues []string
+	encodingValues  []string
+	encodingStorage [1]string
 }
 type responseCache struct {
 	mu           sync.Mutex
@@ -100,11 +99,6 @@ type responseRound struct {
 	user             int64
 	keyed            bool
 	gzip, hit, flash bool
-	// validator304 marks a route whose conditional requests are answered by
-	// its own validator before rendering (the messages page): the fresh 304
-	// carries the validator's cache-control and ETag, and the hit must
-	// reproduce that head rather than the recorded no-cache one.
-	validator304 bool
 }
 
 func newResponseCache(limit int) *responseCache {
@@ -220,10 +214,9 @@ func (s *Server) beginResponseCache(r *http.Request) {
 	state := browserState(r)
 	state.load()
 	info.response = &responseRound{
-		version:      info.databaseVersion,
-		gzip:         encoding == "gzip",
-		flash:        state.values["flash"] != nil,
-		validator304: route.Endpoint == "messages#index",
+		version: info.databaseVersion,
+		gzip:    encoding == "gzip",
+		flash:   state.values["flash"] != nil,
 	}
 }
 
@@ -529,9 +522,9 @@ func (e *cachedResponse) setMapEncoding(h http.Header) {
 }
 
 // serveCached304 writes a cache hit's 304. The fresh 304 is not the 200 head
-// with a different status: the recorded routes answer from finish's
-// notModified with a "no-cache" fallback, while the messages page answers from
-// its validator before rendering, with the validator's cache-control and ETag.
+// with a different status: recorded responses answer from finish's
+// notModified with a "no-cache" fallback, while map-rendered responses carry
+// the validator's cache-control and ETag.
 // The entry records which flavor it was and the hit reproduces it.
 //
 // The recorded flavor's block carries the response's coding, so it replays
@@ -625,20 +618,14 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 		}
 	}
 	wire := w.encoded
-	var joined []byte
+	total := len(wire)
 	if wire == nil && len(w.parts) > 0 {
-		total := 0
 		for _, part := range w.parts {
 			total += len(part)
 		}
-		joined = make([]byte, 0, total)
-		for _, part := range w.parts {
-			joined = append(joined, part...)
-		}
-		wire = joined
-	}
-	if wire == nil {
+	} else if wire == nil {
 		wire = w.body.Bytes()
+		total = len(wire)
 	}
 	// The key is rebuilt into a stack buffer (the same bytes responseHit
 	// hashed) so the entry can keep the exact key without a per-request copy;
@@ -651,8 +638,19 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 	}
 	var keyBuf [responseKeyBufSize]byte
 	key := appendResponseCacheKey(keyBuf[:0], info, r, round, round.version)
-	if len(wire) == 0 || len(wire)+len(key)+1024 > s.responses.limit/8 {
+	if total == 0 || total+len(key)+1024 > s.responses.limit/8 {
 		return
+	}
+	// Parts are borrowed, but their joined buffer is newly owned by this
+	// entry. Reject oversized bodies before allocating it; clone only borrowed
+	// contiguous buffers. The final generation check still gates publication.
+	if wire == nil {
+		wire = make([]byte, 0, total)
+		for _, part := range w.parts {
+			wire = append(wire, part...)
+		}
+	} else {
+		wire = bytes.Clone(wire)
 	}
 	header := make(http.Header)
 	if h.Get("Content-Type") == "" {
@@ -680,14 +678,14 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 	if !strings.Contains(header.Get("Vary"), "Accept-Encoding") {
 		header.Add("Vary", "Accept-Encoding")
 	}
-	entry := &cachedResponse{digest: sha256.Sum256(key), key: bytes.Clone(key), version: round.version, body: bytes.Clone(wire), header: header, explicitLength: len(w.encoded) > 0 || w.encodedLength > 0 || len(w.parts) > 0}
+	entry := &cachedResponse{digest: sha256.Sum256(key), key: bytes.Clone(key), version: round.version, body: wire, header: header, explicitLength: len(w.encoded) > 0 || w.encodedLength > 0 || len(w.parts) > 0}
 	// The replay metadata: the exact head block the fresh response emitted,
 	// rendered once here so a hit does no map, sort or sanitize work and no
 	// header-value copy. It is only built for the responses whose framing is
 	// fully decided by an explicit Content-Length (the recorded/encoded
 	// paths); a body the server framed itself (chunked or inferred length)
 	// keeps the map path, which is the baseline shape the framing tests pin.
-	entry.validator304 = round.validator304 || !entry.explicitLength
+	entry.validator304 = !entry.explicitLength
 	entry.etag = append([]byte(nil), header.Get("ETag")...)
 	if modified := header.Get("Last-Modified"); modified != "" {
 		if parsed, err := http.ParseTime(modified); err == nil {
@@ -696,7 +694,8 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 	}
 	entry.xcache = h.Get("X-Cache")
 	if encoding := header.Get("Content-Encoding"); encoding != "" {
-		entry.encodingValues = []string{encoding}
+		entry.encodingStorage[0] = encoding
+		entry.encodingValues = entry.encodingStorage[:]
 	}
 	entry.head304 = s.buildReplay304(header, entry.validator304, entry.xcache)
 	if entry.explicitLength {

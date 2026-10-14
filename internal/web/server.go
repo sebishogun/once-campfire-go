@@ -1112,16 +1112,13 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request, u database.Use
 		s.serveCached(hit, w, r)
 		return
 	}
-	messages, validator, err := s.messageData(r, u)
+	messages, _, err := s.messageData(r, u)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	if len(messages) == 0 {
 		w.WriteHeader(204)
-		return
-	}
-	if validator.apply(w, r) {
 		return
 	}
 	s.render(w, r, "messages", 200, page{Messages: viewMessages(messages)})
@@ -1233,13 +1230,7 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request, u databas
 // nor admit a generation-gated cache: an unobservable generation cannot prove
 // freshness.
 func (s *Server) requestGeneration(r *http.Request) (uint64, bool) {
-	if info := requestMetadata(r.Context()); info != nil && info.databaseVersion != 0 {
-		return info.databaseVersion, true
-	}
-	if version, err := s.DB.ResponseVersion(r.Context()); err == nil && version != 0 {
-		return version, true
-	}
-	return 0, false
+	return s.contextGeneration(r.Context())
 }
 
 func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User) {

@@ -35,7 +35,7 @@ const afterBatchLimit = 256
 // called with each primary batch's size and its after-phase transaction
 // count. It is a test hook, set before Open (like fastWriteRecord), for the
 // batch-size histogram and the commits-per-message contract.
-var writerBatchObserver func(primary, afterCommits int)
+var writerBatchObserver func(primary, afterChunksAttempted int)
 
 // messageWriter serializes message creation onto the one write connection.
 //
@@ -76,7 +76,7 @@ type messageWriter struct {
 	// observe, when non-nil (tests), receives each primary batch's size and
 	// the number of after-phase transactions it needed. It is captured at
 	// construction from writerBatchObserver, so a test sets that before Open.
-	observe func(primary, afterCommits int)
+	observe func(primary, afterChunksAttempted int)
 	// mu guards closed, inflight and busy. closed rejects submissions after
 	// Close; inflight counts submissions that passed the closed check and
 	// are still between their mutex unlock and the channel send, so Close's
@@ -97,8 +97,10 @@ type messageWriter struct {
 	// backoff window had elapsed); restartAttempts counts those whose lane
 	// actually ran the checkpoint pragmas (an unusable connection returns
 	// attempted=false without running them); restartErrors counts invocations
-	// that returned an error or never attempted; restarts counts attempts
-	// SQLite completed (it reset the WAL); restartIncomplete counts attempts it
+	// that returned an error (including cleanup after a successful RESTART)
+	// or never attempted; this is an invocation failure, not proof that SQLite
+	// failed to restart. restarts counts wholly successful invocations where
+	// SQLite completed RESTART; restartIncomplete counts attempts it
 	// refused, reported in the pragma's result row; restartDeferred counts
 	// checks skipped because the checkpointer held the gate or the backoff
 	// window had not elapsed. The stall counters measure the wall time the
@@ -237,13 +239,13 @@ func (w *messageWriter) walLimit() {
 	w.restartPassiveNanos.Add(outcome.passiveNanos)
 	w.restartRestartNanos.Add(outcome.restartNanos)
 	if err != nil || !outcome.attempted {
-		// An error, or a lane that could not run the pragmas at all. Neither
-		// reset the WAL, so back off like a refusal.
+		// Invocation error, possibly cleanup after SQLite completed RESTART.
+		// Keep the existing backoff policy; report completion separately.
 		w.restartErrors.Add(1)
 		if err == nil {
 			err = errRestartNotAttempted
 		}
-		slog.Warn("WAL checkpoint restart failed", "error", err, "attempted", outcome.attempted)
+		slog.Warn("WAL checkpoint invocation failed", "error", err, "attempted", outcome.attempted, "sqlite_restart_completed", outcome.completed)
 		w.backoffRestart()
 		return
 	}
@@ -352,7 +354,7 @@ func (w *messageWriter) Close() {
 				"attempts", w.restartAttempts.Load(),
 				"completed", w.restarts.Load(),
 				"incomplete", w.restartIncomplete.Load(),
-				"errors", w.restartErrors.Load(),
+				"invocation_errors_including_cleanup", w.restartErrors.Load(),
 				"deferred", w.restartDeferred.Load(),
 				"stall_ms", w.restartStallNanos.Load()/int64(time.Millisecond),
 				"stall_max_ms", w.restartStallMax.Load()/int64(time.Millisecond),
@@ -597,15 +599,15 @@ run:
 	// row should exist, and every successful job in the batch fails with the
 	// commit error (the shape the caller's own after transaction never had the
 	// chance to run).
-	afterCommits := 0
+	afterChunksAttempted := 0
 	if commitErr == nil {
-		afterCommits = w.runAfter(batch, results)
+		afterChunksAttempted = w.runAfter(batch, results)
 	}
 	// Report the batch before delivering results, so an observer's record is
 	// complete by the time every caller has returned (the histogram test reads
 	// it after wg.Wait).
 	if w.observe != nil {
-		w.observe(len(batch), afterCommits)
+		w.observe(len(batch), afterChunksAttempted)
 	}
 	for i, job := range batch {
 		if result := results[i]; result.err == nil && commitErr != nil {
@@ -619,8 +621,8 @@ run:
 
 // runAfter is the writer-owned second phase (ENGINE-45): the after-commit work
 // of every job whose primary work committed, run in bounded transactions
-// after the primary commit. It returns the number of after-phase transactions
-// it committed (zero when the batch had no after work), which the batch
+// after the primary commit. It returns the number of after-phase chunks
+// attempted, including begin/transaction failures (zero without after work), which the batch
 // observer reports. The work runs on the writer's goroutine and lane, so a
 // later batch cannot overtake an earlier batch's after work; the after
 // statements are exactly the job.after surface the caller used to run, so the
@@ -635,16 +637,16 @@ func (w *messageWriter) runAfter(batch []*messageJob, results []messageResult) i
 	if len(idxs) == 0 {
 		return 0
 	}
-	commits := 0
+	chunksAttempted := 0
 	for start := 0; start < len(idxs); start += afterBatchLimit {
 		end := start + afterBatchLimit
 		if end > len(idxs) {
 			end = len(idxs)
 		}
 		w.runAfterChunk(batch, results, idxs[start:end])
-		commits++
+		chunksAttempted++
 	}
-	return commits
+	return chunksAttempted
 }
 
 // runAfterChunk commits one bounded group of after-commit jobs. A single job

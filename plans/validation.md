@@ -2,7 +2,69 @@
 
 The full application is implemented. Tests and browser workflows pass; the screenshot and accessibility layers match in the exercised inventory. **Strict all-layer parity is not a pass:** server/live DOM and network differences remain visible.
 
-## Automated checks
+## Final cache-coherency review (2026-10-14, opt-coherency-astra)
+
+The earlier dated sections below are historical receipts, not current cache
+limitations. HTTP cache keys now share the request's pre-read observed generation
+from pinned `PRAGMA data_version`, including reference windows and the room,
+account, invitation and original-room read caches. Failed observations bypass
+those caches; fresh membership checks remain. Admission retains the pre-read
+key, so an interleaved commit cannot publish old inputs under the new generation.
+This does not provide a transaction snapshot across an entire rendered page.
+
+Pagination no longer answers conditionals from message IDs/timestamps before
+rendering: the complete representation (recorded piece digests where available)
+defines the ETag. Author changes therefore invalidate it without a message touch.
+
+Regression receipts in `/tmp/opencode/astra-review-before.log` and
+`/tmp/opencode/astra-review-after.log`:
+
+| Finding | Unfixed `48a2fbc` | Fixed |
+|---|---|---|
+| Author rename validator | stale 304 in all 8 cache/pieces/framing combinations | changed 200, then fresh 304 |
+| Foreign reference insert/delete | cached 0 vs oracle 1; cached 1 vs oracle 0 | equal windows |
+| Commit between reference scan and admission | old empty window served in new generation | new row returned |
+| Four read caches | stale room/account/invitation/original-room result | equals uncached reader |
+| HTTP cache-off oracle | foreign room/account/insert/delete/invitation bodies differ | byte-identical bodies |
+
+The oracle server uses `CAMPFIRE_READ_CACHE=off`, reference cache budget 0 and
+response cache budget 0. The admission interleaving is deterministic: retain the
+scan's key, commit via a separate connection, then publish the retained scan.
+
+Admission `-benchmem`, 100 iterations, 32 KiB / 384 KiB bodies:
+
+| Shape | Allocations before → after (32 / 384 KiB) |
+|---|---|
+| Accepted parts | 21 → 20 / 23 → 22 |
+| Oversized parts | 1 → 0 / 1 → 0 |
+| Generation-rejected parts | 21 → 20 / 23 → 22 |
+| Accepted encoded buffer | 24 → 23 / 24 → 23 |
+
+Accepted/rejected parts no longer copy the joined body twice; oversized parts
+allocate 0 B/op. Encoded admission embeds its one-string backing array; total
+bytes/op rise by about 16 bytes from the containing object's allocation class,
+while object count falls by one. Escape analysis on the unfixed tree reports
+`response_cache.go:699:34: []string{...} escapes to heap`; that standalone
+allocation is absent after the fix. Identity/gzip replay handlers for 200,
+HEAD and 304 remain **0 B/op, 0 allocs/op**. Receipts:
+`astra-admission-before.log`, `astra-admission-after.log`,
+`astra-encoded-before.log`, `astra-encoded-after.log` in `/tmp/opencode/`.
+The host was busy; these are allocation results, not throughput claims.
+
+Keep-alive replay tests require a replay-count increment for each eligible
+shape; the session-changing room map path is excluded. Writer diagnostics name
+after-phase counts as attempted chunks (failed chunks included), and label
+checkpoint invocation errors including cleanup, logging SQLite completion
+separately. Transaction/checkpoint behavior is unchanged.
+
+Verification: full root race suite with `sqlite_fts5`, nested
+`third_party/websocket` race suite, `go vet ./...`, and empty `gofmt -l .`.
+Raw receipts are `/tmp/opencode/astra-race.log`, `astra-websocket-race.log`,
+`astra-vet.log`, and `astra-gofmt.log`. Browser/container, DOM/wire-wide parity,
+and end-to-end throughput were not rerun for these fixes; historical screen
+and accessibility parity is not full DOM/wire parity.
+
+## Historical automated checks
 
 | Check | Result |
 |---|---|
@@ -306,7 +368,7 @@ paced all-clients p50 2.16 vs 2.05 ms, sustained 3,354 vs 4,061 msgs/s (0.83×).
 151→225 MiB Go vs 119→126 MiB Rust (5–10× below Rails).
 
 Raw: `../once-campfire-elixir/bench/results/merged-official-20261007/`.
-## ENGINE-40b record (2026-10-07, versioned authorization cache and lock-free fan-out)
+## Historical ENGINE-40b record (2026-10-07, versioned authorization cache and lock-free fan-out)
 
 The remaining cable gap vs Rust (def late ~14%, theirs ~22%) was the publish/delivery
 path: per-publish SQL authorization and per-recipient allocation. Shipped behind the same
@@ -328,7 +390,10 @@ identical fan-out). Three pieces:
   served from cache") is pinned in tests. Bumps are all post-commit, in the audited write
   helpers; `DeleteSession` was added (and web logout routed through it) so the logout
   write bumps too. Out-of-band SQL is not visible until a bump or restart (documented
-  single-process limit, same as the sidebar/search caches).
+  cable counter-cache limit at that revision). Current cable publication
+  authorization and HTTP sidebar/search,
+  response, piece, reference-window and read caches additionally carry the
+  pinned-reader `PRAGMA data_version` generation and observe external commits.
 - Forward fan-out: recipients are snapshotted under the hub read lock into a slice
   pre-sized to the client count (one allocation, no growth), then authorized and delivered
   with no hub lock held. All authorization lookups for one publish happen under a single
@@ -846,8 +911,11 @@ published Rust figures within ~2-4% (published 106,494 / 102,697 / 120,294 /
 | search | 125,870 | 197,400 | 1.57× |
 | post_message | 8,235 | 15,817 | 1.92× |
 
-Three consistent rounds per app (spread ≤3% for Rust, ≤2% for Go medians; two
-Go rounds carried one lower outlier on sidebar/search). Raw:
+Three rounds per app are limited replication. Go ranges `(max-min)/median`
+are room 0.16%, messages 1.38%, sidebar 12.78%, search 12.85%, post 3.15%.
+Sidebar and search both dip in round two; the medians and ratios above remain
+unchanged. These are historical train measurements, not measurements of the
+final coherency fixes. Raw:
 `/tmp/opencode/matched-rust-go/summary.json`.
 
 The train `34782d0` = engine-v2 (DHH review fixes) + opt-loop + opt-cache +

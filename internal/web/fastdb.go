@@ -113,8 +113,9 @@ func (s *Server) roomRow(c *fastdb.Conn, ctx context.Context, user, id int64) (d
 // misses exactly where they always have. The returned references slice is the
 // cached window's on a hit and must not be mutated.
 func (s *Server) messageRefs(c *fastdb.Conn, ctx context.Context, room, anchor int64, direction string, version time.Time) ([]database.Message, messageValidator, error) {
-	key := messageRefsKey{room: room, version: version.UnixMicro(), anchor: anchor, direction: direction}
-	if entry, ok := s.refsCache.lookup(key); ok {
+	generation, observable := s.contextGeneration(ctx)
+	key := messageRefsKey{generation: generation, room: room, version: version.UnixMicro(), anchor: anchor, direction: direction}
+	if entry, ok := s.refsCache.lookup(key); observable && ok {
 		s.messageRefsHits.Add(1)
 		return entry.refs, messageValidator{etag: entry.etag}, nil
 	}
@@ -135,8 +136,12 @@ func (s *Server) messageRefs(c *fastdb.Conn, ctx context.Context, room, anchor i
 	if err != nil {
 		return nil, messageValidator{}, err
 	}
-	validator := messageValidatorOf(messages)
-	s.refsCache.store(key, messages, validator)
+	// References cannot validate rendered bytes: author and association edits
+	// need not move message timestamps. Rendering determines the ETag.
+	validator := messageValidator{}
+	if observable {
+		s.refsCache.store(key, messages, validator)
+	}
 	return messages, validator, nil
 }
 

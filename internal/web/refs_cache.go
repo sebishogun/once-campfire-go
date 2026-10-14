@@ -4,8 +4,6 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,10 +16,9 @@ import (
 // function of the room's content, and rooms.updated_at (in the room row both
 // routes already read for membership) moves on every message
 // create/edit/delete/boost. So the scan result is cached keyed by
-// (roomID, pageVersion, anchor, direction) and a hit is validated by the
-// room-version component of the key alone: a request that read the same
-// rooms.updated_at value reads the same reference window. A write changes the
-// version and the key misses; nothing is invalidated by hand.
+// (observed generation, roomID, pageVersion, anchor, direction). The pre-read
+// generation observes foreign commits even when rooms.updated_at is unchanged
+// and remains the admission key if another commit lands during the scan.
 //
 // The cached value deliberately holds only references (id, room, update
 // stamp), never rich text or author rows: full message rows hydrate in
@@ -29,11 +26,8 @@ import (
 // cache miss. That is the same shape the legacy "before" direction already
 // used, so one hydration path serves every direction.
 //
-// The messages-page validator (ETag, Last-Modified, Cache-Control) is a pure
-// function of the references too, so it is precomputed once per fill instead
-// of rebuilt per request (the 40× Sprintf/Format/ReplaceAll + sha256 the
-// profile attributed to messageFreshness); the per-request work is one header
-// set and the conditional check.
+// References are not validators. Freshness is determined after rendering,
+// using recorded piece digests where available, including related-user bytes.
 
 // messageRefsDefaultMB is the byte budget when CAMPFIRE_MESSAGE_REFS_CACHE_MB
 // is unset. References are small (40 refs ≈ 2.3 KB charged), so the default is
@@ -48,10 +42,11 @@ const messageRefsMaxEntries = 4096
 // updated-at stamp in UnixMicro at fill time (the precision the database
 // stores); a hit requires the request's room row to carry the same value.
 type messageRefsKey struct {
-	room      int64
-	version   int64
-	anchor    int64
-	direction string
+	generation uint64
+	room       int64
+	version    int64
+	anchor     int64
+	direction  string
 }
 
 // messageRefsEntry is one cached window: the reference list plus the
@@ -171,26 +166,8 @@ func (v messageValidator) apply(w http.ResponseWriter, r *http.Request) bool {
 	return notModified(w, r, etag, time.Time{})
 }
 
-// messageValidatorOf precomputes the messages-page validator from message
-// references. The digest input is built exactly as conditional.go's former
-// messageFreshness built it — per message "messages/<id>-<stamp without
-// dots>", joined with "/", suffixed "/messages/index" — so the cached
-// validator is byte-for-byte what the per-request rebuild produced, minus the
-// rebuilding. Only the ETag survives that contract: the Last-Modified branch
-// and the Turbo-Frame variant were removed with messageFreshness (b345ea4 —
-// the rendered representation defines freshness, and this page's rendered
-// frame equals its document).
-func messageValidatorOf(refs []database.Message) messageValidator {
-	var parts strings.Builder
-	for _, m := range refs {
-		parts.WriteString("messages/")
-		parts.WriteString(strconv.FormatInt(m.ID, 10))
-		parts.WriteByte('-')
-		parts.WriteString(strings.ReplaceAll(m.UpdatedAt.UTC().Format("20060102150405.000000"), ".", ""))
-		parts.WriteByte('/')
-	}
-	prefix := strings.TrimSuffix(parts.String(), "/")
-	var v messageValidator
-	v.etag = weakETag(sha256.Sum256([]byte(prefix + "/messages/index")))
-	return v
+// messageValidatorOf describes the rendered-body contract for callers without
+// recorded pieces. References and timestamps alone cannot validate a body.
+func messageValidatorOf(rendered []byte) messageValidator {
+	return messageValidator{etag: weakETag(sha256.Sum256(rendered))}
 }

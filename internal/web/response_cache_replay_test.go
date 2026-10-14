@@ -206,11 +206,9 @@ func TestResponseCacheHit304ReproducesFreshHead(t *testing.T) {
 
 // TestResponseCacheReplayEngages pins the lane's engagement on the hot shape:
 // a returning browser's messages-page 200/HEAD hits are emitted through the
-// precomposed seam and move the replay counter, while its 304 does not — the
-// messages page composes its fresh 304 on the map path (its validator answers
-// before rendering), and a shape whose fresh 304 is a map-path response must
-// keep composing on the map path so the Deflate middleware sees the 304
-// status. The recorded routes' 304s do replay. The non-framed room shape (a
+// precomposed seam and move the replay counter, as does its recorded 304.
+// Freshness now follows rendering instead of a timestamp-only early check.
+// The non-framed room shape (a
 // last_room Set-Cookie must reach the head) deliberately does not replay.
 func TestResponseCacheReplayEngages(t *testing.T) {
 	app, _, cookie, user := testResponseCacheApps(t)
@@ -231,7 +229,7 @@ func TestResponseCacheReplayEngages(t *testing.T) {
 	}{
 		{"200", "GET", "", true},
 		{"HEAD", "HEAD", "", true},
-		{"304", "GET", etag, false},
+		{"304", "GET", etag, true},
 	} {
 		replays0 := app.responseReplays.Load()
 		hits0, _ := app.responses.counters()
@@ -470,6 +468,11 @@ func TestResponseCacheReplayKeepAlive(t *testing.T) {
 				hits1, _ := on.responses.counters()
 				replays1 := on.responseReplays.Load()
 				totalReplays += replays1 - replays0
+				// Room without last_room changes the session and deliberately
+				// takes the map path. All other shapes here must replay.
+				if s.label != "room-gzip" && replays1-replays0 != 1 {
+					t.Fatalf("%s: replay delta %d, want 1", s.label, replays1-replays0)
+				}
 				if hits1 <= hits0 {
 					t.Fatalf("%s: the second request on the connection did not hit the response cache (hits %d -> %d)", s.label, hits0, hits1)
 				}
