@@ -62,10 +62,9 @@ type cachedResponse struct {
 	// nil when the entry must take the map path (a body the server framed
 	// itself, or a map carrying a receiver-owned line).
 	head []byte
-	// head304 is the precomposed 304 replay block: the lines the fresh 304
-	// emitted from the head lane (the recorded no-cache block, or the route
-	// validator's cache-control/ETag block) with X-Cache baked in. nil never
-	// occurs; it is unused when the request is not conditionally fresh.
+	// head304 is the precomposed 304 replay block for the recorded flavor (the
+	// no-cache block with X-Cache baked in); nil for the validator flavor,
+	// whose hit takes the map path (see serveCached304).
 	head304 []byte
 	// xcache is the front's X-Cache marker baked into head and head304. A hit
 	// whose live marker differs takes the map path, because the marker is a
@@ -82,6 +81,11 @@ type cachedResponse struct {
 	// http.ParseTime allocation.
 	etag         []byte
 	lastModified time.Time
+	// encodingValues is the single-element value slice for the stored wire
+	// content coding, nil for identity. A replay puts it on the live map (see
+	// setMapEncoding). It is shared read-only: len == cap == 1, so a Header.Add
+	// on the key allocates instead of writing into the entry.
+	encodingValues []string
 }
 type responseCache struct {
 	mu           sync.Mutex
@@ -491,6 +495,7 @@ func (s *Server) replayCached(entry *cachedResponse, w http.ResponseWriter, r *h
 	buffered.precomposed = true
 	buffered.parts = buffered.partsBuf[:1]
 	buffered.parts[0] = entry.body
+	entry.setMapEncoding(h)
 	// Mark the response as written exactly as the fresh framed path does: the
 	// session was checked unchanged, so its commit is a no-op, and the
 	// deferred session write must not emit a second head.
@@ -503,16 +508,40 @@ func (s *Server) replayCached(entry *cachedResponse, w http.ResponseWriter, r *h
 	return true
 }
 
+// setMapEncoding puts the stored wire coding on the live map, exactly as the
+// fresh framed path does (recorded_pieces.go's Content-Encoding line).
+//
+// The Deflate middleware inside the chain decides pass-through from the header
+// map, and the precomposed lane bypasses its WriteHeader, so the map is the
+// only place it can learn the body is already encoded. Without the coding it
+// starts its own gzip writer after the response is already on the wire; at
+// close that writer emits a lone gzip member, which the owned loop's
+// Content-Length guard rejects and which marks the connection broken — the
+// keep-alive connection is then closed without a Connection: close header, so
+// the client's next request on it fails.
+//
+// The slice is the entry's own, shared read-only (len == cap == 1, so an Add
+// on the key allocates rather than writing into the entry).
+func (e *cachedResponse) setMapEncoding(h http.Header) {
+	if e.encodingValues != nil {
+		h["Content-Encoding"] = e.encodingValues
+	}
+}
+
 // serveCached304 writes a cache hit's 304. The fresh 304 is not the 200 head
 // with a different status: the recorded routes answer from finish's
-// notModified with a "no-cache" fallback and no entity headers, while the
-// messages page answers from its validator before rendering, with the
-// validator's cache-control and ETag. The entry records which flavor it was,
-// and the hit reproduces it: through the precomposed seam when the entry has
-// a 304 block and the request gates hold (the same lane the 200 uses), and
-// otherwise by setting exactly the map lines that flavor carries and letting
-// finish emit the 304 (the head is then the loop's map-path 304, byte for
-// byte).
+// notModified with a "no-cache" fallback, while the messages page answers from
+// its validator before rendering, with the validator's cache-control and ETag.
+// The entry records which flavor it was and the hit reproduces it.
+//
+// The recorded flavor's block carries the response's coding, so it replays
+// through the same lane as the 200 — with the coding on the live map, for the
+// reason setMapEncoding documents. The validator flavor's fresh 304 carries no
+// coding, so its map must not either; with no coding there an inner middleware
+// would start its own compressor after the 304 is on the wire, so that flavor
+// takes the map path instead, whose 304 the middleware does see (a 304 status
+// is its pass-through case) and whose bytes are identical to the fresh
+// validator 304.
 func (s *Server) serveCached304(entry *cachedResponse, w http.ResponseWriter, r *http.Request, h http.Header) {
 	buffered := findResponseBuffer(w)
 	if buffered == nil {
@@ -522,12 +551,9 @@ func (s *Server) serveCached304(entry *cachedResponse, w http.ResponseWriter, r 
 	}
 	// The precomposed 304 lane mirrors the fresh framed branch, which only
 	// runs for a non-HEAD request (a HEAD 304 is composed on the map path).
-	if s.precomposed && r.Method != "HEAD" && h.Get("X-Cache") == entry.xcache && findPrecomposedReceiver(w) != nil {
+	if !entry.validator304 && s.precomposed && r.Method != "HEAD" && h.Get("X-Cache") == entry.xcache && findPrecomposedReceiver(w) != nil {
 		if precomposedFramingAllowed(w, entry.header.Get("Content-Encoding")) && precomposedEligible(r, h, browserStateIfAny(r)) {
-			// The block carries every line this flavor's fresh 304 emits; the
-			// front's seam splices the live map's lines (the X-Cache marker is
-			// baked in, the coding is in the block) exactly as it did for the
-			// fresh framed 304.
+			entry.setMapEncoding(h)
 			buffered.recordedHead = entry.head304
 			buffered.recordedStatus = http.StatusNotModified
 			buffered.precomposed = true
@@ -669,6 +695,9 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 		}
 	}
 	entry.xcache = h.Get("X-Cache")
+	if encoding := header.Get("Content-Encoding"); encoding != "" {
+		entry.encodingValues = []string{encoding}
+	}
 	entry.head304 = s.buildReplay304(header, entry.validator304, entry.xcache)
 	if entry.explicitLength {
 		entry.head = s.buildReplayHead(h, framedHead(w), len(wire), entry.xcache)
