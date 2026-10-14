@@ -283,6 +283,9 @@ type requestOriginKey struct{}
 
 func messagePermalink(ctx context.Context, room, message int64) string {
 	origin, _ := ctx.Value(requestOriginKey{}).(string)
+	if info := requestMetadata(ctx); info != nil {
+		origin = info.origin
+	}
 	if origin == "" {
 		origin = "http://example.org"
 	}

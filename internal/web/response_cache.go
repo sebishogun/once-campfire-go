@@ -236,10 +236,10 @@ func (s *Server) responseHit(r *http.Request) *cachedResponse {
 	if round.flash || round.user == 0 {
 		return nil
 	}
-	version, err := s.DB.ResponseVersion(r.Context())
-	if err != nil || version != round.version {
+	if !s.currentRequestGeneration(r, round.version) {
 		return nil
 	}
+	version := round.version
 	// The key is built into a stack buffer and hashed in place: the map key is
 	// the digest, and a hit is confirmed against the entry's stored key bytes.
 	// A lookup therefore allocates nothing; only an admission copies the key.

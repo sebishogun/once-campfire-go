@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"database/sql"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,59 @@ func testDBPath(t testing.TB, db *database.DB) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestCapturedGenerationRevocation(t *testing.T) {
+	for _, budget := range []string{"0", "16"} {
+		for _, route := range []string{"/searches?q=revocationneedlebody", "/users/sidebar"} {
+			t.Run(budget+route, func(t *testing.T) {
+				t.Setenv("CAMPFIRE_RESPONSE_CACHE_MB", budget)
+				app, server, cookie, user := testApp(t)
+				ctx := context.Background()
+				room, err := app.DB.CreateRoom(ctx, user.ID, "Rooms::Closed", "PrivateBoundaryRoom", []int64{user.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := app.DB.CreateMessage(ctx, user.ID, room.ID, "boundary-client", "<p>revocationneedlebody</p>", "revocationneedlebody"); err != nil {
+					t.Fatal(err)
+				}
+				marker := "message_boundary-client"
+				if route == "/users/sidebar" {
+					marker = "PrivateBoundaryRoom"
+				}
+				response, body := perform(t, server, "GET", route, "", nil, cookie)
+				if response.StatusCode != 200 || !strings.Contains(string(body), marker) {
+					t.Fatalf("warm %s: %d missing marker", route, response.StatusCode)
+				}
+				foreign, err := sql.Open("sqlite3", "file:"+testDBPath(t, app.DB)+"?_busy_timeout=5000")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer foreign.Close()
+				captured, resume := make(chan struct{}), make(chan struct{})
+				app.afterGenerationCapture = func() { close(captured); <-resume }
+				req := httptest.NewRequest("GET", route, nil)
+				req.AddCookie(cookie)
+				rec := httptest.NewRecorder()
+				done := make(chan struct{})
+				go func() { app.ServeHTTP(rec, req); close(done) }()
+				<-captured
+				_, err = foreign.ExecContext(ctx, "DELETE FROM memberships WHERE room_id=? AND user_id=?", room.ID, user.ID)
+				close(resume)
+				<-done
+				app.afterGenerationCapture = nil
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rec.Code != 200 {
+					t.Fatalf("status %d", rec.Code)
+				}
+				if strings.Contains(rec.Body.String(), marker) {
+					t.Fatalf("%s served revoked content from captured generation", route)
+				}
+			})
+		}
+	}
 }
 
 // TestSearchCacheObservesForeignMembershipRevocation pins the reviewer's

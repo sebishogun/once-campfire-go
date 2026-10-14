@@ -26,6 +26,9 @@ func (s *Server) mention(u database.User) richtext.Mention {
 }
 func (s *Server) richContext(ctx context.Context) richtext.Context {
 	host, _ := ctx.Value(requestHostKey{}).(string)
+	if info := requestMetadata(ctx); info != nil {
+		host = info.host
+	}
 	if name, _, err := net.SplitHostPort(host); err == nil {
 		host = name
 	}

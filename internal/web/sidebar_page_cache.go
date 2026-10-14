@@ -158,13 +158,19 @@ func (c *sidebarPageCache) put(entry sidebarPageEntry) {
 // on any full render — gate miss or a warm layout render that found no page —
 // and the same bytes then serve every request until the next sidebar-visible
 // write. body aliases the render buffer, so the entry copies what it keeps.
-func (s *Server) storeSidebarPage(p page, body []byte) {
+func (s *Server) storeSidebarPage(p page, body []byte) (sidebarPageEntry, bool) {
+	if s.sidebarPages.limit <= 0 || len(body)+240 > s.sidebarPages.limit/8 {
+		return sidebarPageEntry{}, false
+	}
 	if _, ok := sidebarPageKeySize(p.gateVersion, p.gateGeneration, p.User, p.Frame); !ok {
 		// A name too long for the stack buffer is not stored rather than grown.
-		return
+		return sidebarPageEntry{}, false
 	}
 	var keyBuf [maxSidebarPageKeySize]byte
 	key := appendSidebarPageKey(keyBuf[:0], p.gateVersion, p.gateGeneration, p.User, p.Frame)
+	if len(key)+len(body)+240 > s.sidebarPages.limit/8 {
+		return sidebarPageEntry{}, false
+	}
 	var compressed bytes.Buffer
 	writer, _ := gzip.NewWriterLevel(&compressed, 6)
 	writer.Header.OS = 3
@@ -178,6 +184,7 @@ func (s *Server) storeSidebarPage(p page, body []byte) {
 		etag:  fmt.Sprintf("W/\"%x\"", sum[:16]),
 	}
 	s.sidebarPages.put(entry)
+	return entry, true
 }
 
 // serveSidebarPage writes a cached sidebar page: the precomposed headers, the
@@ -195,11 +202,12 @@ func (s *Server) serveSidebarPage(w http.ResponseWriter, r *http.Request, entry 
 	if notModified(w, r, entry.etag, time.Time{}) {
 		return
 	}
-	w.WriteHeader(http.StatusOK)
 	if s.clientEncoding(r) == "gzip" {
 		h.Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(entry.gzip)
 		return
 	}
+	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(entry.plain)
 }

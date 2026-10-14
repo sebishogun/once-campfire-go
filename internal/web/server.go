@@ -50,7 +50,9 @@ func parseRecordedPieces(raw string) (enabled, valid bool) {
 }
 
 type Server struct {
-	fragments *fragmentCache
+	// afterGenerationCapture is a request-boundary test barrier, nil in production.
+	afterGenerationCapture func()
+	fragments              *fragmentCache
 	// responses is upstream's completed-response cache layer (e3a1309 / the
 	// C port's 64 MiB response-body cache): whole HTML responses for the room
 	// and messages-page routes, keyed by the observed database generation,
@@ -452,21 +454,24 @@ func New(db *database.DB, secrets *rails.Secrets, secure bool, dbPath string, st
 	return s, nil
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if assets.Serve(w, r) {
+		return
+	}
 	// The observed database generation (upstream ef00d84) is captured once
 	// per request, before any reads: fragmentKey and the piece identities
 	// namespace their caches by it, so an in-flight render can never populate
 	// a newer generation after a commit and external-process commits are
 	// observed by generation alone.
 	info := &requestInfo{host: r.Host, origin: s.origin(r)}
-	if version, err := s.DB.ResponseVersion(r.Context()); err == nil {
-		info.databaseVersion = version
+	if r.URL.Path != "/up" && r.URL.Path != "/up.json" {
+		if version, err := s.DB.ResponseVersion(r.Context()); err == nil {
+			info.databaseVersion = version
+		}
+	}
+	if s.afterGenerationCapture != nil {
+		s.afterGenerationCapture()
 	}
 	r = r.WithContext(context.WithValue(r.Context(), requestInfoKey{}, info))
-	r = r.WithContext(context.WithValue(r.Context(), requestHostKey{}, r.Host))
-	r = r.WithContext(context.WithValue(r.Context(), requestOriginKey{}, s.origin(r)))
-	if assets.Serve(w, r) {
-		return
-	}
 	if r.URL.Path != "/cable" && !strings.HasPrefix(r.URL.Path, "/rails/active_storage/") {
 		// ENGINE-48: the response buffer, its parts and the precomposed head
 		// and body come from one per-request reclaimed block (reset, not
@@ -813,7 +818,10 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 	// no page) fills the whole-page cache under the served gate version.
 	// Flash-carrying renders are per-request state and never stored.
 	if name == "sidebar" && p.gateVersion > 0 && p.gateGeneration > 0 && p.Notice == "" && p.Error == "" {
-		s.storeSidebarPage(p, b.Bytes())
+		if entry, ok := s.storeSidebarPage(p, b.Bytes()); ok {
+			s.serveSidebarPage(w, r, entry)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if recorded != nil {
@@ -1233,6 +1241,21 @@ func (s *Server) requestGeneration(r *http.Request) (uint64, bool) {
 	return s.contextGeneration(r.Context())
 }
 
+// Reuse the lookup observation across the whole-response and result caches.
+// Admission still compares against the original captured generation separately.
+func (s *Server) currentRequestGeneration(r *http.Request, captured uint64) bool {
+	info := requestMetadata(r.Context())
+	if info != nil && info.generationChecked {
+		return info.generationCurrent && info.databaseVersion == captured
+	}
+	current, err := s.DB.ResponseVersion(r.Context())
+	ok := err == nil && captured != 0 && current == captured
+	if info != nil {
+		info.generationChecked, info.generationCurrent = true, ok
+	}
+	return ok
+}
+
 func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User) {
 	// The served gate comes from the sidebar version registry alone; a warm
 	// request serves the cached frame with only the layout rendered fresh,
@@ -1245,25 +1268,25 @@ func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User
 		return
 	}
 	generation, generationOK := s.requestGeneration(r)
-	if generationOK {
+	if generationOK && s.currentRequestGeneration(r, generation) {
 		if gate, ok := s.sidebarGate(u.ID); ok && gate.version == version && gate.generation == generation {
-			if frame, ok := s.fragments.get(gate.frameKey); ok {
-				// Whole-page serve: the gate version covers every page input,
-				// so the precompressed document built for it is the page this
-				// request would render. A session flash is per-request state
-				// and never cached; requests carrying one render fresh.
-				state := browserState(r)
-				state.load()
-				if state.values["flash"] == nil {
-					if _, ok := sidebarPageKeySize(version, generation, u, r.Header.Get("Turbo-Frame") != ""); ok {
-						var pageKeyBuf [maxSidebarPageKeySize]byte
-						pageKey := appendSidebarPageKey(pageKeyBuf[:0], version, generation, u, r.Header.Get("Turbo-Frame") != "")
-						if entry, ok := s.sidebarPages.get(pageKey); ok {
-							s.serveSidebarPage(w, r, entry)
-							return
-						}
+			// Whole-page serve: the gate version covers every page input,
+			// so the precompressed document built for it is the page this
+			// request would render. A session flash is per-request state
+			// and never cached; requests carrying one render fresh.
+			state := browserState(r)
+			state.load()
+			if state.values["flash"] == nil {
+				if _, ok := sidebarPageKeySize(version, generation, u, r.Header.Get("Turbo-Frame") != ""); ok {
+					var pageKeyBuf [maxSidebarPageKeySize]byte
+					pageKey := appendSidebarPageKey(pageKeyBuf[:0], version, generation, u, r.Header.Get("Turbo-Frame") != "")
+					if entry, ok := s.sidebarPages.get(pageKey); ok {
+						s.serveSidebarPage(w, r, entry)
+						return
 					}
 				}
+			}
+			if frame, ok := s.fragments.get(gate.frameKey); ok {
 				s.render(w, r, "sidebar", 200, page{User: u, SidebarHTML: frame, gateVersion: version, gateGeneration: generation})
 				return
 			}
@@ -1315,7 +1338,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request, u database.User)
 	// served (lookup) or admitted (store) as if the reads had seen it.
 	generation, generationOK := s.requestGeneration(r)
 	corpus, membership := s.DB.CorpusVersion(), s.DB.MembershipVersion()
-	if s.searchCache != nil && generationOK {
+	if s.searchCache != nil && generationOK && s.currentRequestGeneration(r, generation) {
 		if result, ok := s.searchCache.get(u.ID, q, corpus, membership, generation); ok {
 			// Hit: the message fragments come from the recorded piece cache
 			// (keyed by exactly these messages' id/stamp pairs), so no Search,
@@ -1337,11 +1360,6 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request, u database.User)
 		s.fail(w, err)
 		return
 	}
-	rooms, err := s.DB.Rooms(r.Context(), u.ID)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
 	if s.searchCache != nil && generationOK {
 		// Store only when the generation and versions are still the ones the
 		// reads began under: a write that committed mid-request (local or
@@ -1352,7 +1370,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request, u database.User)
 			s.searchCache.put(u.ID, q, corpus, membership, generation, searchResult{recent: recent, messages: messages})
 		}
 	}
-	s.render(w, r, "search", 200, page{Title: "Search", Query: q, User: u, Rooms: rooms, Messages: viewMessages(messages), RecentSearches: recent, SearchResultCount: len(messages)})
+	s.render(w, r, "search", 200, page{Title: "Search", Query: q, User: u, Messages: viewMessages(messages), RecentSearches: recent, SearchResultCount: len(messages)})
 }
 
 func (s *Server) serveCable(w http.ResponseWriter, r *http.Request, u database.User) {

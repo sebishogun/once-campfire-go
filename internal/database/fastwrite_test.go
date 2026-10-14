@@ -549,13 +549,13 @@ func TestFastWriteStatementStream(t *testing.T) {
 	}
 	after := []string{
 		"BEGIN IMMEDIATE",
-		stmtInsertSearchIndex,
 		stmtBumpUnread,
 		"COMMIT",
 	}
 	want = []string{"BEGIN IMMEDIATE", "COMMIT"} // the blocker's transaction
 	want = append(want, "BEGIN IMMEDIATE")
 	want = append(want, job...)
+	want = append(want, stmtInsertSearchIndex)
 	want = append(want, "COMMIT")
 	want = append(want, after...)
 	if got := snapshot(); !reflect.DeepEqual(got, want) {
