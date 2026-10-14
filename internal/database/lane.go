@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"strconv"
 	"sync"
 	"time"
@@ -113,12 +114,17 @@ type laneConn interface {
 // only when the lane could not run the pragmas at all; completed is false when
 // SQLite reported the checkpoint incomplete (a reader pinning frames, or
 // another checkpoint holding the lock), which is the case the writer must
-// count separately from a restart that actually reset the WAL.
+// count separately from a restart that actually reset the WAL. passiveNanos
+// and restartNanos split the attempt's wall time into the backfill step
+// (page copying and its filesystem sync) and the RESTART step (which includes
+// the busy-handler wait).
 type checkpointOutcome struct {
-	attempted  bool
-	completed  bool
-	frames     int64
-	backfilled int64
+	attempted    bool
+	completed    bool
+	frames       int64
+	backfilled   int64
+	passiveNanos int64
+	restartNanos int64
 }
 
 // sqlLaneConn is the database/sql lane: the existing write pool, whose
@@ -134,6 +140,11 @@ type sqlLaneConn struct {
 	probeMu   sync.Mutex
 	probeLast time.Time
 	probeVal  int64
+	// restoreStmt overrides the statement that restores the pool's normal busy
+	// timeout after a checkpoint attempt (empty means stmtSQLRestoreBusy). It
+	// exists so a test can make the restore fail and prove the connection is
+	// discarded rather than returned with the checkpoint's timeout still set.
+	restoreStmt string
 }
 
 // checkpointProbe bounds how often the database/sql lane reads the WAL frame
@@ -173,28 +184,57 @@ var (
 )
 
 // backfillRestart mirrors the fastdb lane's CheckpointRestart on the write
-// pool: a bounded busy timeout for the attempt, PASSIVE, then a RESTART whose
-// result row is read so a refused checkpoint is not reported as success. The
-// pool is one connection (SetMaxOpenConns(1)), so the temporary timeout cannot
-// be observed by another statement.
+// pool. It reserves one pool connection for the whole sequence: the busy
+// timeout is a property of the connection, and SetMaxOpenConns(1) serializes
+// individual operations without reserving the connection across them, so
+// without the reservation an unrelated borrower (a session or account write, a
+// queued after-commit statement) could run between the steps and inherit the
+// checkpoint's 250 ms timeout. The timeout is restored on the same connection
+// before it goes back to the pool; if the restore fails, the connection is
+// discarded rather than returned misconfigured.
 func (c *sqlLaneConn) backfillRestart() (checkpointOutcome, error) {
-	if _, err := c.db.Exec(stmtSQLCheckpointBusy); err != nil {
+	ctx := context.Background()
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
 		return checkpointOutcome{}, err
 	}
-	out, err := c.backfillRestartLocked()
-	if _, restoreErr := c.db.Exec(stmtSQLRestoreBusy); restoreErr != nil && err == nil {
-		err = restoreErr
+	out, err := c.backfillRestartOn(ctx, conn)
+	restore := c.restoreStmt
+	if restore == "" {
+		restore = stmtSQLRestoreBusy
+	}
+	if _, restoreErr := conn.ExecContext(ctx, restore); restoreErr != nil {
+		// Never hand a connection whose busy timeout is still the checkpoint's
+		// back to the pool: Raw with driver.ErrBadConn discards it, and the
+		// pool opens a fresh one (with the DSN's timeout) on the next use.
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		if err == nil {
+			err = restoreErr
+		}
+		return out, err
+	}
+	if closeErr := conn.Close(); closeErr != nil && err == nil {
+		err = closeErr
 	}
 	return out, err
 }
 
-func (c *sqlLaneConn) backfillRestartLocked() (checkpointOutcome, error) {
+func (c *sqlLaneConn) backfillRestartOn(ctx context.Context, conn *sql.Conn) (checkpointOutcome, error) {
+	if _, err := conn.ExecContext(ctx, stmtSQLCheckpointBusy); err != nil {
+		return checkpointOutcome{}, err
+	}
 	out := checkpointOutcome{attempted: true}
-	if _, err := c.db.Exec("PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+	passiveStart := time.Now()
+	if _, err := conn.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+		out.passiveNanos = time.Since(passiveStart).Nanoseconds()
 		return out, err
 	}
+	out.passiveNanos = time.Since(passiveStart).Nanoseconds()
+	restartStart := time.Now()
 	var busy, log, checked int64
-	if err := c.db.QueryRow("PRAGMA wal_checkpoint(RESTART)").Scan(&busy, &log, &checked); err != nil {
+	err := conn.QueryRowContext(ctx, "PRAGMA wal_checkpoint(RESTART)").Scan(&busy, &log, &checked)
+	out.restartNanos = time.Since(restartStart).Nanoseconds()
+	if err != nil {
 		return out, err
 	}
 	out.completed = busy == 0

@@ -47,18 +47,20 @@ func (c *fastLaneConn) walFrames() int64 { return c.conn.WALFrames() }
 
 // backfillRestart runs PASSIVE then RESTART on the direct connection, between
 // transactions, so the next create resets the WAL. It reports whether SQLite
-// completed the restart and bounds its own busy wait.
+// completed the restart, whether the attempt ran at all, and the split between
+// the backfill step and the restart step; the connection's mutex is held
+// across the whole sequence, so no other statement can observe the temporary
+// busy timeout.
 func (c *fastLaneConn) backfillRestart() (checkpointOutcome, error) {
 	result, err := c.conn.CheckpointRestart()
-	if err != nil {
-		return checkpointOutcome{attempted: true}, err
-	}
 	return checkpointOutcome{
-		attempted:  true,
-		completed:  result.Completed,
-		frames:     result.WALFrames,
-		backfilled: result.Backfilled,
-	}, nil
+		attempted:    result.Attempted,
+		completed:    result.Completed,
+		frames:       result.WALFrames,
+		backfilled:   result.Backfilled,
+		passiveNanos: result.PassiveNanos,
+		restartNanos: result.RestartNanos,
+	}, err
 }
 
 type fastLaneTx struct {

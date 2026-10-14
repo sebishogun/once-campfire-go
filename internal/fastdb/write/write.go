@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/basecamp/once-campfire-go/internal/fastdb/csqlite"
 )
@@ -170,26 +171,37 @@ func (c *WriteConn) WALFrames() int64 {
 	return c.db.WALFrames()
 }
 
-// CheckpointResult is one WAL restart attempt's outcome. Completed is false
-// when SQLite reported the checkpoint incomplete in its result row — the
-// pragma reports a refused or partial checkpoint in the (busy, log,
-// checkpointed) columns rather than as an execution error, which is what
-// happens while a reader still pins frames.
+// CheckpointResult is one WAL restart attempt's outcome. Attempted reports
+// whether the checkpoint pragmas ran at all (false when the connection was
+// unusable before the first one). Completed is false when SQLite reported the
+// checkpoint incomplete in its result row — the pragma reports a refused or
+// partial checkpoint in the (busy, log, checkpointed) columns rather than as
+// an execution error, which is what happens while a reader still pins frames.
+// PassiveNanos and RestartNanos split the attempt's wall time into the
+// backfill step (page copying plus its filesystem sync) and the RESTART step
+// (which includes the busy-handler wait), so the busy-wait setting can be
+// judged separately from the checkpoint's own I/O.
 type CheckpointResult struct {
-	Completed  bool
-	WALFrames  int64
-	Backfilled int64
+	Attempted    bool
+	Completed    bool
+	WALFrames    int64
+	Backfilled   int64
+	PassiveNanos int64
+	RestartNanos int64
 }
 
-// CheckpointBusyMS bounds the busy timeout the restart attempt runs with, so a
-// pinned reader can stall the writer for at most this long per attempt instead
-// of the connection's normal 5000 ms. The caller spaces attempts out
-// (backoff), so a long reader cannot stall the writer repeatedly.
+// CheckpointBusyMS is the busy-handler timeout (milliseconds) the restart
+// attempt runs with instead of the connection's normal BusyTimeoutMS. It is a
+// busy-wait setting, not a wall-clock bound on the attempt: it limits only how
+// long SQLite's busy handler retries a locked WAL. Connection or mutex
+// acquisition, the checkpoint's page copying and filesystem synchronization,
+// and scheduler delays are all outside it. The caller spaces attempts out
+// (backoff) so a pinned reader cannot stall the writer on every drain.
 const CheckpointBusyMS = 250
 
 // BusyTimeoutMS is the write connections' normal busy timeout (OpenWriter
 // applies it; the write DSN sets the same value). The restart attempt restores
-// it after bounding its own wait.
+// it after bounding its own busy wait.
 const BusyTimeoutMS = 5000
 
 // The busy-timeout statements are prebuilt: the statement cache is keyed by
@@ -202,16 +214,17 @@ var (
 // CheckpointRestart backfills the WAL with a PASSIVE checkpoint and then
 // restarts it with RESTART, on this connection and between transactions (the
 // caller must hold no transaction). It is the writer's WAL-growth limit: the
-// writer owns the connection, so its RESTART is not refused by another
-// connection's checkpoint (the database layer also gates the background
-// checkpointer against it), and the next write on this connection resets the
-// WAL to its first frame. Both pragmas are no-ops when the WAL is empty.
+// writer owns the connection and holds its mutex across the whole sequence, so
+// no other statement can observe the temporary busy timeout and the RESTART is
+// not refused by another connection's checkpoint (the database layer also
+// gates the background checkpointer against it); the next write on this
+// connection resets the WAL to its first frame. Both pragmas are no-ops when
+// the WAL is empty.
 //
 // The RESTART's result row is read, so an incomplete checkpoint (a reader
 // still pinning frames, or another checkpoint holding the lock) is reported as
-// Completed=false rather than as success. The attempt runs with a bounded busy
-// timeout (CheckpointBusyMS) and restores the normal one, so a pinned reader
-// cannot stall the writer for the full 5000 ms.
+// Completed=false rather than as success. The attempt runs with a bounded
+// busy-handler timeout (CheckpointBusyMS) and restores the normal one.
 func (c *WriteConn) CheckpointRestart() (CheckpointResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -229,16 +242,23 @@ func (c *WriteConn) CheckpointRestart() (CheckpointResult, error) {
 }
 
 func (c *WriteConn) checkpointRestartLocked() (CheckpointResult, error) {
-	// PASSIVE backfills every frame no reader is pinning. Its row is not
-	// needed; the RESTART's row reports the outcome.
-	if err := c.execLocked("PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
-		return CheckpointResult{}, err
-	}
-	busy, log, checked, err := c.checkpointRowLocked("PRAGMA wal_checkpoint(RESTART)")
+	result := CheckpointResult{Attempted: true}
+	passiveStart := time.Now()
+	err := c.execLocked("PRAGMA wal_checkpoint(PASSIVE)")
+	result.PassiveNanos = time.Since(passiveStart).Nanoseconds()
 	if err != nil {
-		return CheckpointResult{}, err
+		return result, err
 	}
-	return CheckpointResult{Completed: busy == 0, WALFrames: log, Backfilled: checked}, nil
+	restartStart := time.Now()
+	busy, log, checked, err := c.checkpointRowLocked("PRAGMA wal_checkpoint(RESTART)")
+	result.RestartNanos = time.Since(restartStart).Nanoseconds()
+	if err != nil {
+		return result, err
+	}
+	result.Completed = busy == 0
+	result.WALFrames = log
+	result.Backfilled = checked
+	return result, nil
 }
 
 // checkpointRowLocked runs a PRAGMA wal_checkpoint statement and reads its

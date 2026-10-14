@@ -3,10 +3,12 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -230,12 +232,16 @@ func TestWALRestartBoundedUnderPinnedReader(t *testing.T) {
 			t.Fatalf("no refused restart recorded with a reader pinned (attempts=%d completed=%d deferred=%d)",
 				d.writer.restartAttempts.Load(), d.writer.restarts.Load(), d.writer.restartDeferred.Load())
 		}
+		// Observed-value regression guard, not a guarantee: the busy-wait
+		// setting (write.CheckpointBusyMS) bounds only SQLite's busy-handler
+		// retry, and the pre-fix code spent the full 5000 ms busy timeout on
+		// every attempt (worst post 5.004 s). The guard is deliberately loose.
 		if worst > time.Second {
-			t.Fatalf("writer stalled %v on one post with a pinned reader; want the attempt bounded to %d ms",
+			t.Fatalf("observed worst post %v with a pinned reader; the pre-fix code took ~5s per attempt (busy-wait setting %d ms)",
 				worst, write.CheckpointBusyMS)
 		}
 		if stall := time.Duration(d.writer.restartStallMax.Load()); stall > time.Second {
-			t.Fatalf("worst restart attempt took %v, want under 1s", stall)
+			t.Fatalf("observed worst restart invocation %v, want under the 1s regression guard", stall)
 		}
 		if pinnedFor > 10*time.Second {
 			t.Fatalf("400 posts with a pinned reader took %v, want the writer not to stall repeatedly", pinnedFor)
@@ -271,8 +277,8 @@ func TestWALRestartBoundedUnderPinnedReader(t *testing.T) {
 			post(i)
 		}
 		if d.writer.restarts.Load() <= completedBefore {
-			t.Fatalf("no restart completed after the reader released (restarts=%d incomplete=%d attempts=%d)",
-				d.writer.restarts.Load(), d.writer.restartIncomplete.Load(), d.writer.restartAttempts.Load())
+			t.Fatalf("no restart completed after the reader released (restarts=%d incomplete=%d attempts=%d invocations=%d)",
+				d.writer.restarts.Load(), d.writer.restartIncomplete.Load(), d.writer.restartAttempts.Load(), d.writer.restartInvocations.Load())
 		}
 	})
 }
@@ -311,11 +317,11 @@ func TestWALRestartDefersToCheckpointerGate(t *testing.T) {
 				worst = d
 			}
 		}
-		attempts := d.writer.restartAttempts.Load()
+		invocations := d.writer.restartInvocations.Load()
 		deferred := d.writer.restartDeferred.Load()
 		d.writer.gate.unlock()
-		if attempts != 0 {
-			t.Fatalf("writer ran %d restarts while the gate was held", attempts)
+		if invocations != 0 {
+			t.Fatalf("writer tried %d restarts while the gate was held", invocations)
 		}
 		if deferred == 0 {
 			t.Fatal("no deferral recorded while the gate was held")
@@ -327,11 +333,11 @@ func TestWALRestartDefersToCheckpointerGate(t *testing.T) {
 			post(i)
 		}
 		if d.writer.restartAttempts.Load() == 0 {
-			t.Fatal("no restart attempt after the gate released")
+			t.Fatal("no restart attempt ran after the gate released")
 		}
 		if d.writer.restarts.Load() == 0 {
-			t.Fatalf("no completed restart after the gate released (attempts=%d incomplete=%d)",
-				d.writer.restartAttempts.Load(), d.writer.restartIncomplete.Load())
+			t.Fatalf("no completed restart after the gate released (attempts=%d incomplete=%d invocations=%d)",
+				d.writer.restartAttempts.Load(), d.writer.restartIncomplete.Load(), d.writer.restartInvocations.Load())
 		}
 	})
 }
@@ -387,6 +393,224 @@ func TestWALThresholdRecoversAfterLargeBodies(t *testing.T) {
 			t.Fatalf("WAL = %d bytes after large bodies, want bounded near the threshold", size)
 		}
 	})
+}
+
+// TestSQLLaneCheckpointTimeoutNotLeakedToBorrowers is the regression for the
+// pool-borrowing HIGH/MEDIUM: the checkpoint's temporary busy timeout is a
+// property of the connection, and SetMaxOpenConns(1) serializes individual
+// operations without reserving the connection across them. The lane now
+// reserves one *sql.Conn for the whole sequence, so an unrelated borrower (a
+// session or account write, a queued after-commit statement) can never observe
+// the checkpoint's 250 ms timeout. The borrower loop runs across a refused
+// attempt (a pinned reader), a completed attempt, and a failed restore; it
+// must only ever read the configured timeout.
+func TestSQLLaneCheckpointTimeoutNotLeakedToBorrowers(t *testing.T) {
+	t.Setenv("CAMPFIRE_FASTDB_WRITE", "off")
+	t.Setenv("CAMPFIRE_CHECKPOINT_PAGES", "200")
+	t.Setenv("CAMPFIRE_CHECKPOINT_MS", "3600000")
+	path := filepath.Join(t.TempDir(), "borrow.sqlite3")
+	d, user, room := seedPoster(t, path, 4)
+	defer d.Close()
+	lane, ok := d.lane.(*sqlLaneConn)
+	if !ok {
+		t.Fatalf("lane is %T, want the database/sql lane", d.lane)
+	}
+	ctx := context.Background()
+	post := func(i int) {
+		t.Helper()
+		if _, err := d.CreateMessage(ctx, user, room, fmt.Sprintf("b-%d", i), "<p>b</p>", "b"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The borrower loop: every read must see the configured timeout, never the
+	// checkpoint's.
+	var mu sync.Mutex
+	var leaked []int64
+	seen := 0
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var value int64
+			if err := d.Write.QueryRow("PRAGMA busy_timeout").Scan(&value); err != nil {
+				continue
+			}
+			mu.Lock()
+			seen++
+			if value != write.BusyTimeoutMS {
+				leaked = append(leaked, value)
+			}
+			mu.Unlock()
+		}
+	}()
+	check := func(phase string) {
+		t.Helper()
+		mu.Lock()
+		got, n := append([]int64(nil), leaked...), seen
+		mu.Unlock()
+		if len(got) > 0 {
+			t.Fatalf("%s: borrower observed busy_timeout %v (want only %d) over %d reads", phase, got, write.BusyTimeoutMS, n)
+		}
+		if n == 0 {
+			t.Fatalf("%s: borrower never read the timeout", phase)
+		}
+	}
+
+	// Refused attempt: a read transaction pins a WAL read slot, so the RESTART
+	// runs its whole busy wait with the temporary timeout set.
+	for i := 0; i < 20; i++ {
+		post(i)
+	}
+	reader, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_busy_timeout=5000&_journal_mode=WAL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	reader.SetMaxOpenConns(1)
+	tx, err := reader.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pinned int
+	if err := tx.QueryRow("SELECT count(*) FROM messages").Scan(&pinned); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := d.lane.backfillRestart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.completed {
+		t.Fatalf("attempt with a reader pinned = %+v, want refused", outcome)
+	}
+	check("refused attempt")
+
+	// Completed attempt: the reader is gone.
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err = d.lane.backfillRestart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.completed {
+		t.Fatalf("attempt after the reader released = %+v, want completed", outcome)
+	}
+	check("completed attempt")
+
+	// Failed restore: the connection must be discarded, not returned with the
+	// checkpoint's timeout still set, so the borrower still reads the
+	// configured value.
+	lane.restoreStmt = "SELECT * FROM sql_checkpoint_no_such_table"
+	_, err = d.lane.backfillRestart()
+	lane.restoreStmt = ""
+	if err == nil {
+		t.Fatal("restore failure was not reported")
+	}
+	var value int64
+	if err := d.Write.QueryRow("PRAGMA busy_timeout").Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value != write.BusyTimeoutMS {
+		t.Fatalf("busy_timeout after a failed restore = %d, want %d", value, write.BusyTimeoutMS)
+	}
+	check("failed restore")
+
+	close(stop)
+	<-done
+}
+
+// TestWALRestartCounterIdentities pins the counter semantics with a stub lane:
+// an invocation is a check that decided to try, an attempt is a lane that
+// actually ran the checkpoint pragmas, and an error is an invocation that
+// returned an error or never attempted. A lane that refuses to run (attempted
+// false) must not be counted as an attempt or as a restart.
+func TestWALRestartCounterIdentities(t *testing.T) {
+	t.Run("error before execution", func(t *testing.T) {
+		w := &messageWriter{conn: stubLane{frames: 100, outcome: checkpointOutcome{attempted: false}, err: errors.New("lane unavailable")}, limit: 10}
+		w.walLimit()
+		if got := w.restartInvocations.Load(); got != 1 {
+			t.Fatalf("invocations = %d, want 1", got)
+		}
+		if got := w.restartAttempts.Load(); got != 0 {
+			t.Fatalf("attempts = %d, want 0 for a lane that never ran", got)
+		}
+		if got := w.restartErrors.Load(); got != 1 {
+			t.Fatalf("errors = %d, want 1", got)
+		}
+		if got := w.restarts.Load() + w.restartIncomplete.Load(); got != 0 {
+			t.Fatalf("restarts+incomplete = %d, want 0", got)
+		}
+	})
+	t.Run("attempted but refused", func(t *testing.T) {
+		w := &messageWriter{conn: stubLane{frames: 100, outcome: checkpointOutcome{attempted: true, completed: false}}, limit: 10}
+		w.walLimit()
+		if got := w.restartInvocations.Load(); got != 1 {
+			t.Fatalf("invocations = %d, want 1", got)
+		}
+		if got := w.restartAttempts.Load(); got != 1 {
+			t.Fatalf("attempts = %d, want 1", got)
+		}
+		if got := w.restartIncomplete.Load(); got != 1 {
+			t.Fatalf("incomplete = %d, want 1", got)
+		}
+		if got := w.restarts.Load(); got != 0 {
+			t.Fatalf("completed restarts = %d, want 0", got)
+		}
+		if got := w.restartErrors.Load(); got != 0 {
+			t.Fatalf("errors = %d, want 0", got)
+		}
+	})
+	t.Run("attempted and completed", func(t *testing.T) {
+		w := &messageWriter{conn: stubLane{frames: 100, outcome: checkpointOutcome{attempted: true, completed: true, frames: 10, backfilled: 10, passiveNanos: 1000, restartNanos: 2000}}, limit: 10}
+		w.walLimit()
+		if got := w.restarts.Load(); got != 1 {
+			t.Fatalf("completed restarts = %d, want 1", got)
+		}
+		if got := w.restartAttempts.Load(); got != 1 {
+			t.Fatalf("attempts = %d, want 1", got)
+		}
+		if got := w.restartErrors.Load() + w.restartIncomplete.Load(); got != 0 {
+			t.Fatalf("errors+incomplete = %d, want 0", got)
+		}
+		if got := w.restartPassiveNanos.Load(); got != 1000 {
+			t.Fatalf("passive nanos = %d, want 1000", got)
+		}
+		if got := w.restartRestartNanos.Load(); got != 2000 {
+			t.Fatalf("restart nanos = %d, want 2000", got)
+		}
+		if got := w.restartStallNanos.Load(); got <= 0 {
+			t.Fatalf("stall nanos = %d, want > 0", got)
+		}
+	})
+	t.Run("below the threshold", func(t *testing.T) {
+		w := &messageWriter{conn: stubLane{outcome: checkpointOutcome{attempted: true, completed: true}, frames: 5}, limit: 10}
+		w.walLimit()
+		if got := w.restartInvocations.Load(); got != 0 {
+			t.Fatalf("invocations = %d, want 0 below the threshold", got)
+		}
+	})
+}
+
+// stubLane is a laneConn for the counter tests: it reports a fixed frame count
+// and returns a fixed checkpoint outcome.
+type stubLane struct {
+	frames  int64
+	outcome checkpointOutcome
+	err     error
+}
+
+func (l stubLane) begin(context.Context) (laneTx, error) { return nil, errors.New("stub") }
+func (l stubLane) close() error                          { return nil }
+func (l stubLane) walFrames() int64                      { return l.frames }
+func (l stubLane) backfillRestart() (checkpointOutcome, error) {
+	return l.outcome, l.err
 }
 
 // TestCheckpointPolicyConfigSemantics pins the knobs' shapes: 0 disables the

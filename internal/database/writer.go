@@ -69,21 +69,32 @@ type messageWriter struct {
 	// checkpointer (SQLite allows one checkpoint at a time, and a RESTART that
 	// arrives while another checkpoint holds the lock is refused).
 	//
-	// The counters are the telemetry. restartAttempts counts attempts that ran
-	// the pragmas; restarts counts those SQLite completed (it reset the WAL);
-	// restartIncomplete counts those it refused, reported in the pragma's
-	// result row; restartDeferred counts checks skipped because the
-	// checkpointer held the gate or the backoff window had not elapsed.
-	// restartStallNanos/restartStallMax measure the time the writer spent
-	// inside an attempt, which is the writer stall the ceiling can cause.
-	limit             int64
-	gate              *checkpointGate
-	restartAttempts   atomic.Int64
-	restarts          atomic.Int64
-	restartIncomplete atomic.Int64
-	restartDeferred   atomic.Int64
-	restartStallNanos atomic.Int64
-	restartStallMax   atomic.Int64
+	// The counters are the telemetry. restartInvocations counts checks that
+	// decided to try (the threshold was reached, the gate was free and the
+	// backoff window had elapsed); restartAttempts counts those whose lane
+	// actually ran the checkpoint pragmas (an unusable connection returns
+	// attempted=false without running them); restartErrors counts invocations
+	// that returned an error or never attempted; restarts counts attempts
+	// SQLite completed (it reset the WAL); restartIncomplete counts attempts it
+	// refused, reported in the pragma's result row; restartDeferred counts
+	// checks skipped because the checkpointer held the gate or the backoff
+	// window had not elapsed. The stall counters measure the wall time the
+	// writer spent inside an invocation, split into the backfill step
+	// (copy + sync) and the RESTART step (which includes the busy-handler
+	// wait), which is what lets the busy-wait setting be judged separately
+	// from the checkpoint's own I/O.
+	limit               int64
+	gate                *checkpointGate
+	restartInvocations  atomic.Int64
+	restartAttempts     atomic.Int64
+	restartErrors       atomic.Int64
+	restarts            atomic.Int64
+	restartIncomplete   atomic.Int64
+	restartDeferred     atomic.Int64
+	restartStallNanos   atomic.Int64
+	restartStallMax     atomic.Int64
+	restartPassiveNanos atomic.Int64
+	restartRestartNanos atomic.Int64
 	// restartAfter and restartBackoff are the incomplete-attempt backoff. They
 	// are plain fields because walLimit runs only under the writer's busy
 	// protocol (the loop or the single in-line claim), never concurrently.
@@ -160,9 +171,14 @@ func newMessageWriter(conn laneConn, limit int64, gate *checkpointGate) *message
 // checks, a single large message can add many frames at once, and a foreign
 // writer's commits are invisible to this connection's hook. There is no
 // backpressure: the writer never refuses or delays a write to stay under the
-// threshold. What it does bound is steady-state growth, and — because the
-// attempt's result row is read and its wait is bounded — the stall a refused
-// restart can cause.
+// threshold.
+//
+// Nor does the threshold bound growth in every state. A RESTART cannot reset
+// the WAL while a reader holds a WAL read slot, so with continuing writes and
+// a persistently pinned reader the WAL grows without bound until that reader
+// goes away — the backoff deliberately permits that rather than stalling the
+// writer on every drain. The threshold bounds growth only while restarts can
+// complete.
 func (w *messageWriter) walLimit() {
 	if w.limit <= 0 {
 		return
@@ -185,11 +201,22 @@ func (w *messageWriter) walLimit() {
 	start := time.Now()
 	outcome, err := w.conn.backfillRestart()
 	stall := time.Since(start)
-	w.restartAttempts.Add(1)
+	w.restartInvocations.Add(1)
+	if outcome.attempted {
+		w.restartAttempts.Add(1)
+	}
 	w.restartStallNanos.Add(stall.Nanoseconds())
 	updateMax(&w.restartStallMax, stall.Nanoseconds())
-	if err != nil {
-		slog.Warn("WAL checkpoint restart failed", "error", err)
+	w.restartPassiveNanos.Add(outcome.passiveNanos)
+	w.restartRestartNanos.Add(outcome.restartNanos)
+	if err != nil || !outcome.attempted {
+		// An error, or a lane that could not run the pragmas at all. Neither
+		// reset the WAL, so back off like a refusal.
+		w.restartErrors.Add(1)
+		if err == nil {
+			err = errRestartNotAttempted
+		}
+		slog.Warn("WAL checkpoint restart failed", "error", err, "attempted", outcome.attempted)
 		w.backoffRestart()
 		return
 	}
@@ -211,9 +238,16 @@ func (w *messageWriter) walLimit() {
 	w.restartBackoff = 0
 	w.restartAfter = time.Time{}
 	if w.telemetry {
-		slog.Info("wal restart", "frames", frames, "limit", w.limit, "stall_us", stall.Microseconds())
+		slog.Info("wal restart", "frames", frames, "limit", w.limit,
+			"stall_us", stall.Microseconds(),
+			"passive_us", outcome.passiveNanos/1000, "restart_us", outcome.restartNanos/1000)
 	}
 }
+
+// errRestartNotAttempted is reported when a lane returns without running the
+// checkpoint pragmas and without an error (a contract violation): it must not
+// be counted as a restart.
+var errRestartNotAttempted = errors.New("database: WAL restart was not attempted")
 
 // backoffRestart arms the window before the next restart attempt after a
 // refused one, doubling the previous window up to the cap.
@@ -287,12 +321,16 @@ func (w *messageWriter) Close() {
 		<-w.done
 		if w.telemetry {
 			slog.Info("wal restart summary",
+				"invocations", w.restartInvocations.Load(),
 				"attempts", w.restartAttempts.Load(),
 				"completed", w.restarts.Load(),
 				"incomplete", w.restartIncomplete.Load(),
+				"errors", w.restartErrors.Load(),
 				"deferred", w.restartDeferred.Load(),
 				"stall_ms", w.restartStallNanos.Load()/int64(time.Millisecond),
 				"stall_max_ms", w.restartStallMax.Load()/int64(time.Millisecond),
+				"passive_ms", w.restartPassiveNanos.Load()/int64(time.Millisecond),
+				"restart_ms", w.restartRestartNanos.Load()/int64(time.Millisecond),
 				"limit", w.limit)
 		}
 	})

@@ -132,3 +132,43 @@ nothing: the same c=16 runs show **attempts 95/96, completed 95/96,
 incomplete 0**, worst single attempt 18–30 ms, total writer stall ~1 s per 10 s,
 WAL max ~40 MB, and `deferred` 6–16 checks where the checkpointer held the gate.
 Raw: [fix.txt](fix.txt).
+
+## Second review fix (2026-10-14): pool borrowing, wording, counters
+
+**Pool borrowing.** The database/sql lane's checkpoint set its temporary
+250 ms busy timeout on the *pool*, not on a reserved connection, and
+`SetMaxOpenConns(1)` serializes individual operations without reserving the
+connection across them. A borrower queued on the pool (a session or account
+write, a queued after-commit statement) could therefore run between the steps
+and inherit the checkpoint's timeout. Reproduced on the pre-fix tree with a
+borrower loop reading `PRAGMA busy_timeout`: `checkpoint took 251ms; borrower
+read the timeout 3 times` / `borrower observed busy_timeout [250 250] (want
+only 5000) over 3 reads`. The lane now reserves one `*sql.Conn` for the whole
+sequence and restores the timeout on that connection before returning it; a
+failed restore discards the connection (`Raw` with `driver.ErrBadConn`) rather
+than returning it misconfigured. After the fix the same probe reads the
+configured value every time (the borrower blocks while the connection is
+reserved). The fastdb lane already held its connection mutex across the
+sequence and is unchanged.
+
+**Wording.** The 250 ms value is a busy-handler setting, not a wall-clock bound
+on an attempt, and growth is not bounded while a reader stays pinned. Both are
+now stated in the code, the README and here, and the ~40 MB result is qualified
+as belonging to this workload and filesystem.
+
+**Split measurement.** The attempt's wall time is now reported split into the
+backfill step (copy + sync) and the RESTART step (which includes the busy
+wait). At c=16 with the threshold on:
+
+```
+invocations=98 attempts=98 completed=98 incomplete=0 errors=0 deferred=6
+stall_ms=989 stall_max_ms=27 passive_ms=935 restart_ms=48
+per attempt: stall_us=6228..17147  passive_us=6183..17086  restart_us=17..31
+```
+
+So ~95% of the writer's time inside an invocation is the PASSIVE backfill
+(page copying and its filesystem sync, which the busy-wait setting does not
+bound) and ~5% is the RESTART step — whose busy wait was ~20–30 µs, three
+orders of magnitude below the 250 ms setting. The setting matters only when a
+reader actually pins a slot, which is the case the pinned-reader test covers.
+Raw: [review2.txt](review2.txt).
