@@ -22,8 +22,9 @@ var ErrWriterClosed = errors.New("database: writer queue closed")
 // (Rust's own write queue is bounded the same way).
 const writeQueueCapacity = 1024
 
-// afterBatchLimit bounds one after-phase transaction: at most this many jobs'
-// after-commit pairs (search row + unread bump) share a commit. It caps the
+// afterBatchLimit bounds one optional after-phase transaction. Production
+// message creation commits search, unread and push intent in the primary phase.
+// At most this many optional callbacks share a commit. It caps the
 // statements and WAL frames a single after transaction writes and the time
 // the writer holds the lane for one chunk, while keeping a burst's commit
 // count near two: a full queue-capacity batch (writeQueueCapacity jobs) needs
@@ -52,12 +53,12 @@ var writerBatchObserver func(primary, afterChunksAttempted int)
 //
 // On the queued path each job runs inside its own savepoint, so a job that
 // fails rolls back exactly its own statements while the rest of the batch
-// still commits; the commit itself is one per batch. After the shared commit
-// the writer runs a second phase of its own: the jobs' after-commit work
-// (search index, unread bump) in bounded transactions, each job inside its
+// still commits; the commit itself is one per batch. Search, unread and push
+// intent belong to this primary transaction. For jobs with optional after
+// callbacks, the writer runs them in bounded transactions, each job inside its
 // own savepoint when the transaction holds more than one, so one failed
 // after-job rolls back only its own statements while the rest commit. A batch
-// of B messages therefore costs the primary commit plus the after phase's
+// with optional callbacks therefore costs the primary commit plus the after phase's
 // transactions — two when the batch fits one after transaction — instead of
 // the B+1 commits the per-caller shape paid. The in-line path folds the
 // after work into the job's own transaction, so a lone post commits
@@ -162,7 +163,7 @@ type messageResult struct {
 	message Message
 	err     error
 	// afterErr is the queued path's after-commit failure: the primary commit
-	// landed and the message is durable, but its search row / unread bump did
+	// landed and the message is durable, but its optional callback did
 	// not. The caller reports it the way Rails raises from the save that
 	// committed — the message stays. It is always nil on the direct and
 	// in-line paths, whose after work commits with the row.
@@ -681,7 +682,7 @@ func (w *messageWriter) runAfter(batch []*messageJob, results []messageResult) i
 // had not already failed. The statements run on a context derived from
 // Background, not the request: the Rust after_commit hooks and Rails'
 // after_commit callbacks are not request-cancellable, and the primary commit
-// already landed, so a disconnecting client must not abort the index/unread
+// already landed, so a disconnecting client must not abort optional callback
 // work. The begin keeps Background (no deadline), matching the shape the
 // caller used before the second phase was writer-owned.
 func (w *messageWriter) runAfterChunk(batch []*messageJob, results []messageResult, idxs []int) {

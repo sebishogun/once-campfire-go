@@ -1,7 +1,7 @@
 <!-- PR body for basecamp/once-campfire-go. Numbers: matched shared-harness run
      2026-10-14 against the latest published Rust revision f9dca47. -->
 
-# Performance engine: every route beats the latest published Rust revision
+# Performance engine and durability fixes
 
 This branch adds a measured performance engine on top of the port — owned
 HTTP/1.1 loop, direct SQLite read/write lanes, generation-checked
@@ -9,14 +9,17 @@ whole-response cache, batched write path with a WAL restart threshold, cable wak
 compiled renderer — with the same schema, storage keys, password hashes and
 Rails-signed sessions. Every fast path has a rollback switch.
 
-## Results — vs Rust (matched run)
+## Historical results — Go `34782d0` vs Rust (matched run)
+
+These measurements predate the final correctness and durability fixes. A
+quiet-host rerun of the current tree is pending; no current-tree speed claim.
 
 Shared verification harness (`basecamp/once-campfire-verification`, revision
 `ec02deb`), Rust at its latest published revision `f9dca47` (the response-cache
 revision), both runtime databases on tmpfs, c=16, 3 alternating rounds,
 8-second samples, every response contract-checked, zero errors:
 
-| HTTP workload (requests/sec) | Rust `f9dca47` | This branch | vs Rust |
+| HTTP workload (requests/sec) | Rust `f9dca47` | Go `34782d0` | vs Rust |
 |---|---:|---:|---:|
 | Room page | 109,586 | **149,403** | **1.36×** |
 | Messages page | 106,497 | **192,759** | **1.81×** |
@@ -32,7 +35,7 @@ is against a validated baseline. Raw receipts:
 
 ### vs the C port (native, same pinning)
 
-| Route | C | This branch | vs C |
+| Route | C | Go `34782d0` | vs C |
 |---|---:|---:|---:|
 | Room page | 156,170 | 146,722 | 0.94× |
 | Messages page | 161,041 | **188,938** | **1.17×** |
@@ -46,7 +49,7 @@ Ahead of C on messages, search and post; C is faster on room and sidebar by medi
 
 - **Owned HTTP/1.1 loop** (`internal/fastserve`, `CAMPFIRE_SERVER_LOOP=on`,
   default): vectorized request parsing, canonical-header fast path, precomposed
-  response heads, one writev per response, deadline calls eliminated where the
+  response heads, one writev per response flush, deadline calls eliminated where the
   socket state already matches.
 - **Whole-response cache** (`CAMPFIRE_RESPONSE_CACHE_MB`, 64 MiB default) for
   room, messages and search: completed responses stored as their exact wire
@@ -54,9 +57,10 @@ Ahead of C on messages, search and post; C is faster on room and sidebar by medi
   serving; direct replay through the precomposed seam removes the header-map
   and body-copy work. Sidebar keeps its own whole-page cache.
 - **Direct SQLite lanes** (`internal/fastdb`, CGO): read lane with fused
-  single-transition version and session reads; write lane with a batched
-  after-commit phase (commits per message drop from ~1.0 to ~0.01 at batch
-  scale), group commit, and checkpoints off the writer.
+  single-transition version and session reads; group-commit write lane with
+  FTS, unread state and push intent in the primary transaction, and checkpoints
+  off the writer. Push recipient progress and outbox acknowledgements add one
+  short transaction per bounded scan, outside network delivery.
 - **WAL restart threshold** (`CAMPFIRE_CHECKPOINT_PAGES`, 10,000 frames): a C WAL hook
   tracks frames; the writer runs PASSIVE + RESTART between jobs, so a busy post
   workload holds the WAL at ~40 MB instead of growing unbounded (measured
@@ -85,7 +89,7 @@ Ahead of C on messages, search and post; C is faster on room and sidebar by medi
   Pagination ETags derive from the complete rendered representation, including
   related-user changes, rather than message IDs and timestamps.
   Cable publication authorization also gates its memo on the pinned-reader
-  generation; the idle heartbeat's local-counter gate is separate.
+  generation; the idle heartbeat also observes the pinned-reader generation.
 - The write path keeps primary-commit-before-callback semantics, per-job
   savepoint isolation, cancellation survival and a shutdown drain; WAL/NORMAL
   durability is unchanged.
@@ -95,8 +99,10 @@ Ahead of C on messages, search and post; C is faster on room and sidebar by medi
 - Warm, single-viewer, tmpfs databases, c=16; three rounds are limited replication.
 - WAL threshold is not a hard bound: persistent readers can prevent restart.
   Threshold PASSIVE/RESTART can delay queued writers before accepting the next batch.
-- FTS indexing commits in the primary message transaction. Only the second-phase unread
-  update remains exposed to a process crash after primary commit.
+- FTS indexing, unread state and push intent commit with the message. Push
+  delivery is at-least-once: a crash after remote acceptance but before the
+  scan's progress commit can repeat delivery. Acknowledged recipients are not
+  replayed; current eligibility is rechecked before sending.
 - WAL `synchronous=NORMAL` can lose commits since the last checkpoint on power loss.
 - PGO benefit was undetected; GOGC=200 trades memory for CPU and is a Docker-image default only.
 - Screen/accessibility parity is not full DOM or wire parity. Historical browser

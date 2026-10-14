@@ -176,11 +176,22 @@ checksum is covered by write-lane parity tests. Sidebar and search-cache version
 after commit on both paths, so the write lane never serves a version-keyed
 cache that hides a committed message or its index row.
 Push workers discover outstanding intent at startup and every second; queue saturation loses only
-a wake. Failed deliveries retain intent with a 30-second retry delay. Successful delivery is
-acknowledged by deleting the record. Delivery is **at-least-once**, not exactly-once: a crash after
-remote acceptance but before acknowledgement can duplicate a notification, including recipients
-already served before another recipient failed. Replay uses current message content, membership
-and subscriptions; deleting a message cascades its pending intent. Disabled VAPID intentionally
+a wake. Each scan reads up to 128 messages and records at most 128 recipient outcomes
+per acknowledgement transaction, with a five-second network/query budget. Network calls
+run outside that transaction. `campfire_push_progress` records successful subscriptions
+and attempt order: acknowledged recipients are excluded, and untouched recipients precede
+failed ones. Expiry stops new deliveries; untouched messages stay due without a retry update.
+After a message's pending recipients have all been attempted, failures back off 30 seconds;
+an untouched suffix stays due for the next scan. Eligibility and subscription keys are
+refreshed before each send. The progress/acknowledgement transaction adds a commit and
+can invalidate generation-keyed caches, but does so once per bounded scan, not per message.
+Retention policy: persistent failures remain indefinitely (no automatic dead-letter deletion)
+until delivery succeeds, eligibility disappears, the message is deleted, or VAPID is disabled.
+Operators must monitor pending intent growth; there is no finite backlog-size guarantee.
+Delivery is **at-least-once**, not exactly-once: a crash after remote acceptance but before
+the scan's progress commit can duplicate that scan's accepted notifications. Committed
+recipient acknowledgements are not replayed. Replay uses current message content, membership
+and subscriptions; deleting a message cascades intent and progress. Disabled VAPID intentionally
 discards pending intent. Websocket publication is best effort and is not replayed. Subprocess
 crash tests cover primary-commit and pre-notification boundaries; simulated push-service and DNS
 failures, startup replay and queue saturation are covered locally, not against a live push provider.
@@ -246,7 +257,7 @@ runs on the commit path or per message.
 serialized fastdb connection (`internal/fastdb/write` over `internal/fastdb/csqlite`) instead of
 `database/sql`: the same six statements — the authorized creator lookup (membership check and name
 in one statement), message insert, room touch, rich-text body, attachment, and search-index insert
-in the primary transaction; only the unread bump remains in the second phase — bound positionally (int64/text/null), prepared once
+in the primary transaction together with unread state and push intent — bound positionally (int64/text/null), prepared once
 and reused across jobs, with the same `BEGIN IMMEDIATE`, savepoint-per-job, single-commit-per-batch
 and atomic group-commit shapes the `database/sql` lane has. The pragma set is identical
 (`busy_timeout=5000`, `foreign_keys=on`, WAL, `synchronous=NORMAL`, `cache_size=2000`,
@@ -455,7 +466,9 @@ with four hardware cores allocated to each app.
 | Post a message | 330 | 262 | 794 | 2,155 | 1,278 | 8,250 | 8,037 | 7,530 |
 | Backend KLOC | 5.5 | 5.3 | 4.1 | 6.8 | 11.6 | 23.2* | 30.7 | 94.8 |
 
-The Go column reflects this branch's engine, re-measured on this machine with
+The historical Go column's measured revision was not recorded (these values
+entered the README in merge `60bfeff`); it is not a current-tree measurement.
+The numbers were measured on this machine with
 the official comparison harness; the other columns are the published cross-port
 figures. The strict same-machine Rails/Rust/Go comparison is in
 [Engine fork results](#engine-fork-results-this-machine) below. The Go KLOC is
@@ -488,7 +501,7 @@ Measured with the official Elixir comparison harness running production Docker
 images for Rails, Rust and this fork on the same machine, same fresh seed,
 identical CPU pinning, 3 rotating repetitions, c=16 medians, zero HTTP errors:
 
-| Route (req/s at c=16) | Rails | This fork | Rust | vs Rust | CPU/req vs Rust |
+| Route (req/s at c=16) | Rails | Go `3305f44` | Rust | vs Rust | CPU/req vs Rust |
 |---|---:|---:|---:|---:|---:|
 | Room page | 222 | 96,568 | 36,771 | 2.63× | 38.3 vs 104 µs |
 | Search | 382 | 132,259 | 33,951 | 3.90× | 27.7 vs 97.5 µs |
@@ -499,7 +512,7 @@ identical CPU pinning, 3 rotating repetitions, c=16 medians, zero HTTP errors:
 | Static CSS | 133,801 | 468,683 | 444,944 | 1.05× | 5.97 vs 7.47 µs |
 | Avatar | 98,680 | 390,494 | 386,903 | 1.01× | 7.07 vs 7.96 µs |
 
-Cable fan-out (messages delivered to every client, same harness and production
+Cable fan-out at Go `3305f44` (messages delivered to every client, same harness and production
 images): 100 clients 5,196 vs 4,043 (1.29×), 500 clients parity (1,101 vs
 1,123), 1,000 clients parity (538 vs 542); saturated post→all p50 at 1,000
 clients is faster than Rust (13.5 vs 16.1 ms). Earlier recording (ENGINE-60/61

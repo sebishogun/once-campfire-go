@@ -383,6 +383,13 @@ func prepare(db *sql.DB) error {
 		retry_at INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX IF NOT EXISTS campfire_push_outbox_due ON campfire_push_outbox(retry_at,message_id);
+	CREATE TABLE IF NOT EXISTS campfire_push_progress (
+		message_id INTEGER NOT NULL REFERENCES campfire_push_outbox(message_id) ON DELETE CASCADE,
+		subscription_id INTEGER NOT NULL REFERENCES push_subscriptions(id) ON DELETE CASCADE,
+		completed INTEGER NOT NULL DEFAULT 0,
+		attempted_at INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY(message_id,subscription_id)
+	);
 	CREATE TRIGGER IF NOT EXISTS campfire_message_push_outbox AFTER INSERT ON messages
 	BEGIN INSERT INTO campfire_push_outbox(message_id) VALUES (new.id); END;`); err != nil {
 		return err

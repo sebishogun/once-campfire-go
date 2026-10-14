@@ -69,6 +69,31 @@ func (d *DB) UnreadCount(ctx context.Context, user int64) (int64, error) {
 	return count, err
 }
 func (d *DB) PushRecipients(ctx context.Context, room, creator int64, mentioned []int64) ([]PushSubscription, error) {
+	return d.pushRecipients(ctx, 0, room, creator, mentioned, 0)
+}
+
+// PendingPushRecipients rechecks current membership, presence and subscription
+// state on every replay. Acknowledged recipients are excluded; never-attempted
+// recipients precede failed ones, so a slow poison endpoint cannot starve them.
+func (d *DB) PendingPushRecipients(ctx context.Context, message, room, creator int64, mentioned []int64, limit int) ([]PushSubscription, error) {
+	return d.pushRecipients(ctx, message, room, creator, mentioned, limit)
+}
+
+// CurrentPushRecipient refreshes keys and eligibility immediately before sending.
+// Membership changes after this read can still race the network side effect.
+func (d *DB) CurrentPushRecipient(ctx context.Context, id, room, creator int64, mentioned []int64) (PushSubscription, error) {
+	query := "SELECT " + pushColumns + " FROM push_subscriptions p JOIN users u ON u.id=p.user_id JOIN memberships m ON m.user_id=u.id WHERE p.id=? AND m.room_id=? AND m.user_id!=? AND (m.connected_at IS NULL OR m.connected_at<?) AND (m.involvement='everything'"
+	args := []any{id, room, creator, Stamp(d.Now().Add(-time.Minute))}
+	if len(mentioned) > 0 {
+		query += " OR (m.involvement='mentions' AND m.user_id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(mentioned)), ",") + "))"
+		for _, user := range mentioned {
+			args = append(args, user)
+		}
+	}
+	return pushRow(d.Read.QueryRowContext(ctx, query+")", args...))
+}
+
+func (d *DB) pushRecipients(ctx context.Context, message, room, creator int64, mentioned []int64, limit int) ([]PushSubscription, error) {
 	query := "SELECT " + pushColumns + " FROM push_subscriptions p JOIN users u ON u.id=p.user_id JOIN memberships m ON m.user_id=u.id WHERE m.room_id=? AND m.user_id!=? AND (m.connected_at IS NULL OR m.connected_at<?) AND (m.involvement='everything'"
 	args := []any{room, creator, Stamp(d.Now().Add(-time.Minute))}
 	if len(mentioned) > 0 {
@@ -77,7 +102,14 @@ func (d *DB) PushRecipients(ctx context.Context, room, creator int64, mentioned 
 			args = append(args, id)
 		}
 	}
-	return d.pushQuery(ctx, query+") ORDER BY CASE m.involvement WHEN 'everything' THEN 0 ELSE 1 END", args...)
+	query += ")"
+	if message != 0 {
+		query += " AND NOT EXISTS (SELECT 1 FROM campfire_push_progress g WHERE g.message_id=? AND g.subscription_id=p.id AND g.completed=1) ORDER BY coalesce((SELECT attempted_at FROM campfire_push_progress g WHERE g.message_id=? AND g.subscription_id=p.id),0),p.id LIMIT ?"
+		args = append(args, message, message, limit)
+	} else {
+		query += " ORDER BY CASE m.involvement WHEN 'everything' THEN 0 ELSE 1 END,p.id"
+	}
+	return d.pushQuery(ctx, query, args...)
 }
 func (d *DB) RoomMemberIDs(ctx context.Context, room int64) ([]int64, error) {
 	rows, err := d.Read.QueryContext(ctx, "SELECT user_id FROM memberships WHERE room_id=?", room)

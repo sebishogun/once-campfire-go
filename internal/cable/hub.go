@@ -315,6 +315,23 @@ func newOutQueueCap(capacity int) *outQueue {
 	return q
 }
 
+// drainBatch consumes the locked ring, unlocks before writing, then releases
+// every batch pointer even if the write fails. The caller owns batch storage.
+func (q *outQueue) drainBatch(batch []*websocket.PreparedMessage, bound int, write func(int) error) error {
+	n := min(q.len, bound, len(batch))
+	for i := 0; i < n; i++ {
+		slot := (q.head + i) % len(q.frames)
+		batch[i] = q.frames[slot]
+		q.frames[slot] = nil
+	}
+	q.head = (q.head + n) % len(q.frames)
+	q.len -= n
+	q.mu.Unlock()
+	err := write(n)
+	clear(batch[:n])
+	return err
+}
+
 // send appends one frame, stopping the client when the ring is full (the
 // 256-frame slow-client policy). It returns whether the frame was queued.
 // The writer is signalled only when it is parked, so a running writer (or
@@ -639,17 +656,7 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 			if h.fast {
 				bound = websocket.BatchMaxFrames
 			}
-			n := min(q.len, bound)
-			for i := 0; i < n; i++ {
-				slot := (q.head + i) % len(q.frames)
-				batch[i] = q.frames[slot]
-				q.frames[slot] = nil
-			}
-			q.head = (q.head + n) % len(q.frames)
-			q.len -= n
-			q.mu.Unlock()
-			err := writeBatch(n)
-			clear(batch[:n])
+			err := q.drainBatch(batch[:], bound, writeBatch)
 			if err != nil {
 				return
 			}
