@@ -373,6 +373,20 @@ var errNoVersionReader = errors.New("database: no generation reader")
 
 // A pinned reader observes commits from every writer, including this process.
 // PRAGMA data_version is connection-local, so it must never use the read pool.
+//
+// The handle is deliberately a single one. A pool of N handles (the shape
+// tried: a buffered channel of GOMAXPROCS-capped-at-8 readers) does not work:
+// each connection's data_version counts only the commits that connection's own
+// pager has observed, and a handle that is read intermittently lags the
+// commits made since its previous read. A capture on one handle and the
+// freshness re-check on another then compare two independent counters, and a
+// commit between them goes unseen — the generation gate then serves a stale
+// cache entry. Measured on this build (8 handles, capture/commit/re-check
+// rounds): 20/20 commits missed; with one handle, 0/20. Reading a full cycle
+// of handles and taking the maximum does track commits, but it multiplies the
+// work by N and re-serializes on the same handles. The single handle's mutex
+// covers one step, one column read and one reset (~100 ns), which is not a
+// measurable bottleneck at request rates.
 func (d *DB) ResponseVersion(ctx context.Context) (uint64, error) {
 	_ = ctx // the direct handle needs no context; kept for call-site symmetry
 	if d.versionFast == nil {

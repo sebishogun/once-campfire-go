@@ -24,6 +24,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,60 +33,107 @@ import (
 
 // sidebarPageEntry is one fully assembled sidebar response: the plain body
 // (for identity clients) and its gzip member (for gzip clients), plus the weak
-// validator the Map path computes over the same bytes.
+// validator the Map path computes over the same bytes. digest is sha256(key)
+// and key is the exact key bytes, so a digest hit can be confirmed exactly.
 type sidebarPageEntry struct {
-	key   string
-	plain []byte
-	gzip  []byte
-	etag  string
-	bytes int
+	digest [32]byte
+	key    []byte
+	plain  []byte
+	gzip   []byte
+	etag   string
+	bytes  int
 }
 
 // sidebarPageCache is a bounded LRU of whole sidebar responses, with the same
 // retention/accounting shape as the fragment cache (packed entries, prune to
-// 3/4 on overflow, oversized entries rejected).
+// 3/4 on overflow, oversized entries rejected). Entries are keyed by the
+// sha256 digest of the exact key bytes.
 type sidebarPageCache struct {
 	mu      sync.Mutex
-	entries map[string]*list.Element
+	entries map[[32]byte]*list.Element
 	order   list.List
 	limit   int
 	size    int
 }
 
 func newSidebarPageCache(limit int) *sidebarPageCache {
-	return &sidebarPageCache{limit: limit, entries: make(map[string]*list.Element)}
+	return &sidebarPageCache{limit: limit, entries: make(map[[32]byte]*list.Element)}
 }
 
-// sidebarPageKey names one user's whole sidebar page at one gate version. The
-// frame mode is part of the key: a Turbo-Frame GET renders the frame-only
-// shell (layout-start's .Frame branch), a different document. The user-row
-// markers the document renders are part of the key too: the session user is
-// read fresh on every request (sessionState), so a user-row write outside the
-// audited helpers — which do not bump the gate — still changes the key and
-// the page re-renders. The account row is not in the key: every audited
-// account write bumps the gate, and the read cache carries the same
-// version-only limit for un-audited account SQL.
-func sidebarPageKey(version, generation uint64, u database.User, frame bool) string {
+// maxSidebarPageKeySize bounds the stack buffer the sidebar page key is built
+// into. A user name long enough to exceed it is bypassed by
+// sidebarPageKeySize before the builder runs, so no append grows the buffer.
+const maxSidebarPageKeySize = 256
+
+// sidebarPageKeySize computes the exact byte length appendSidebarPageKey would
+// append and reports whether it fits the stack buffer. It mirrors the
+// builder's encoding; TestSidebarPageKeyEnvelope pins the two together.
+func sidebarPageKeySize(version, generation uint64, u database.User, frame bool) (int, bool) {
+	var num [20]byte
+	digits := func(v int64) int { return len(strconv.AppendInt(num[:0], v, 10)) }
+	udigits := func(v uint64) int { return len(strconv.AppendUint(num[:0], v, 10)) }
+	size := len("sidebar-page/") + udigits(version) + 1 + udigits(generation) + 1 + digits(u.ID) + 1 + digits(u.UpdatedAt.UnixMicro()) + 1 + digits(int64(len(u.Name))) + 1 + len(u.Name) + 1 + digits(int64(u.Role))
 	if frame {
-		return fmt.Sprintf("sidebar-page/%d/%d/%d/%d/%s/%d/frame", version, generation, u.ID, u.UpdatedAt.UnixMicro(), u.Name, u.Role)
+		size += len("/frame")
 	}
-	return fmt.Sprintf("sidebar-page/%d/%d/%d/%d/%s/%d", version, generation, u.ID, u.UpdatedAt.UnixMicro(), u.Name, u.Role)
+	return size, size <= maxSidebarPageKeySize
 }
 
-func (c *sidebarPageCache) get(key string) (sidebarPageEntry, bool) {
+// appendSidebarPageKey appends the exact key bytes for one user's whole
+// sidebar page at one gate version to b. The frame mode is part of the key: a
+// Turbo-Frame GET renders the frame-only shell (layout-start's .Frame branch),
+// a different document. The user-row markers the document renders are part of
+// the key too: the session user is read fresh on every request
+// (sessionState), so a user-row write outside the audited helpers — which do
+// not bump the gate — still changes the key and the page re-renders. The
+// account row is not in the key: every audited account write bumps the gate,
+// and the read cache carries the same version-only limit for un-audited
+// account SQL. Every string component is length-prefixed so the encoding is
+// injective. The caller hashes the returned bytes into a [32]byte map key and
+// keeps them for exact verification; building the key allocates nothing for
+// the names sidebarPageKeySize admits, and only an admission copies it.
+func appendSidebarPageKey(b []byte, version, generation uint64, u database.User, frame bool) []byte {
+	b = append(b, "sidebar-page/"...)
+	b = strconv.AppendUint(b, version, 10)
+	b = append(b, '/')
+	b = strconv.AppendUint(b, generation, 10)
+	b = append(b, '/')
+	b = strconv.AppendInt(b, u.ID, 10)
+	b = append(b, '/')
+	b = strconv.AppendInt(b, u.UpdatedAt.UnixMicro(), 10)
+	b = append(b, '/')
+	b = strconv.AppendInt(b, int64(len(u.Name)), 10)
+	b = append(b, ':')
+	b = append(b, u.Name...)
+	b = append(b, '/')
+	b = strconv.AppendInt(b, int64(u.Role), 10)
+	if frame {
+		b = append(b, "/frame"...)
+	}
+	return b
+}
+
+func (c *sidebarPageCache) get(key []byte) (sidebarPageEntry, bool) {
+	digest := sha256.Sum256(key)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if element, ok := c.entries[key]; ok {
-		c.order.MoveToFront(element)
-		return element.Value.(sidebarPageEntry), true
+	element, ok := c.entries[digest]
+	if !ok {
+		return sidebarPageEntry{}, false
 	}
-	return sidebarPageEntry{}, false
+	entry := element.Value.(sidebarPageEntry)
+	if !bytes.Equal(entry.key, key) {
+		return sidebarPageEntry{}, false
+	}
+	c.order.MoveToFront(element)
+	return entry, true
 }
 
 func (c *sidebarPageCache) put(entry sidebarPageEntry) {
+	entry.digest = sha256.Sum256(entry.key)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if existing, ok := c.entries[entry.key]; ok {
+	if existing, ok := c.entries[entry.digest]; ok {
 		c.order.MoveToFront(existing)
 		return
 	}
@@ -96,12 +144,12 @@ func (c *sidebarPageCache) put(entry sidebarPageEntry) {
 	for c.size+size > c.limit && c.order.Len() > 0 {
 		oldest := c.order.Back()
 		old := oldest.Value.(sidebarPageEntry)
-		delete(c.entries, old.key)
+		delete(c.entries, old.digest)
 		c.size -= old.bytes
 		c.order.Remove(oldest)
 	}
 	entry.bytes = size
-	c.entries[entry.key] = c.order.PushFront(entry)
+	c.entries[entry.digest] = c.order.PushFront(entry)
 	c.size += size
 }
 
@@ -111,7 +159,12 @@ func (c *sidebarPageCache) put(entry sidebarPageEntry) {
 // and the same bytes then serve every request until the next sidebar-visible
 // write. body aliases the render buffer, so the entry copies what it keeps.
 func (s *Server) storeSidebarPage(p page, body []byte) {
-	key := sidebarPageKey(p.gateVersion, p.gateGeneration, p.User, p.Frame)
+	if _, ok := sidebarPageKeySize(p.gateVersion, p.gateGeneration, p.User, p.Frame); !ok {
+		// A name too long for the stack buffer is not stored rather than grown.
+		return
+	}
+	var keyBuf [maxSidebarPageKeySize]byte
+	key := appendSidebarPageKey(keyBuf[:0], p.gateVersion, p.gateGeneration, p.User, p.Frame)
 	var compressed bytes.Buffer
 	writer, _ := gzip.NewWriterLevel(&compressed, 6)
 	writer.Header.OS = 3
@@ -119,7 +172,7 @@ func (s *Server) storeSidebarPage(p page, body []byte) {
 	_ = writer.Close()
 	sum := sha256.Sum256(body)
 	entry := sidebarPageEntry{
-		key:   key,
+		key:   bytes.Clone(key),
 		plain: bytes.Clone(body),
 		gzip:  compressed.Bytes(),
 		etag:  fmt.Sprintf("W/\"%x\"", sum[:16]),
