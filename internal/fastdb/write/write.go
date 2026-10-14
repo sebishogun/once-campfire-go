@@ -142,7 +142,45 @@ func OpenWriter(path string, maxStatements int) (*WriteConn, error) {
 			return fail(err)
 		}
 	}
+	// The WAL hook replaces the auto-checkpoint hook the pragma above turned
+	// off, so it is installed after the pragmas; it reports the WAL's frame
+	// count after each commit, for the writer's WAL-growth limit.
+	if err := db.EnableWALHook(); err != nil {
+		return fail(err)
+	}
 	return conn, nil
+}
+
+// WALFrames returns the WAL frame count as of this connection's most recent
+// commit (Lever 4). The read is one load of the hook's counter: no statement,
+// no allocation, safe to call from the writer's drain path.
+func (c *WriteConn) WALFrames() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.db == nil {
+		return 0
+	}
+	return c.db.WALFrames()
+}
+
+// CheckpointRestart backfills the WAL with a PASSIVE checkpoint and then
+// restarts it with RESTART, on this connection and between transactions (the
+// caller must hold no transaction). It is the writer's WAL-growth limit: the
+// writer owns the connection, so its RESTART is not refused by another
+// connection's checkpoint, and the next write on this connection resets the
+// WAL to its first frame. Both pragmas are no-ops when the WAL is empty.
+func (c *WriteConn) CheckpointRestart() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, pragma := range [...]string{
+		"PRAGMA wal_checkpoint(PASSIVE)",
+		"PRAGMA wal_checkpoint(RESTART)",
+	} {
+		if err := c.execLocked(pragma); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close finalizes the cached statements and closes the connection. It is

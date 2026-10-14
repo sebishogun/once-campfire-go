@@ -98,18 +98,46 @@ func parseWriteQueue(raw string) (enabled, valid bool) {
 func parseFastdbWrite(raw string) (enabled, valid bool) { return parseWriteQueue(raw) }
 
 // checkpointIntervalMS reads CAMPFIRE_CHECKPOINT_MS (milliseconds, default
-// 1000): the schedule of the off-writer PASSIVE WAL checkpoint.
+// 1000): the schedule of the off-writer PASSIVE WAL checkpoint, which is the
+// fallback that keeps the database backfilled when the WAL is not growing
+// fast enough to reach the growth ceiling. A value of 0 disables the timed
+// fallback (the growth ceiling alone schedules checkpoints); a negative or
+// unparseable value warns and keeps the 1000 ms default.
 func checkpointIntervalMS() time.Duration {
 	raw := os.Getenv("CAMPFIRE_CHECKPOINT_MS")
 	if raw == "" {
 		return time.Second
 	}
 	ms, err := strconv.Atoi(raw)
-	if err != nil || ms <= 0 {
+	if err != nil || ms < 0 {
 		slog.Warn("invalid CAMPFIRE_CHECKPOINT_MS; using 1000", "value", raw)
 		return time.Second
 	}
+	if ms == 0 {
+		return 0
+	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// checkpointLimitPages reads CAMPFIRE_CHECKPOINT_PAGES (WAL frames, default
+// 10000): the WAL-growth ceiling. When the WAL reaches this many frames the
+// write lane backfills and restarts it, so the WAL file cannot grow without
+// bound while readers starve SQLite's own automatic restart (the Rust port's
+// WAL_LIMIT_PAGES and its writer-side restart_wal). 0 disables the ceiling —
+// the pre-change fixed-interval policy, and the rollback switch; a negative
+// or unparseable value warns and keeps the 10000-frame default.
+func checkpointLimitPages() int64 {
+	const fallback = 10000
+	raw := os.Getenv("CAMPFIRE_CHECKPOINT_PAGES")
+	if raw == "" {
+		return fallback
+	}
+	pages, err := strconv.Atoi(raw)
+	if err != nil || pages < 0 {
+		slog.Warn("invalid CAMPFIRE_CHECKPOINT_PAGES; using 10000", "value", raw)
+		return fallback
+	}
+	return int64(pages)
 }
 
 func Open(path string, readers int) (*DB, error) {
@@ -212,8 +240,13 @@ func open(driver, path string, readers int) (*DB, error) {
 		} else {
 			lane = &sqlLaneConn{db: w}
 		}
-		writer := newMessageWriter(lane)
-		checkpoints, err := startCheckpointer(driver, uri+options, checkpointIntervalMS())
+		writer := newMessageWriter(lane, checkpointLimitPages())
+		interval := checkpointIntervalMS()
+		if interval <= 0 && writer.limit <= 0 {
+			slog.Warn("CAMPFIRE_CHECKPOINT_MS=0 with CAMPFIRE_CHECKPOINT_PAGES=0 disables WAL checkpoints until shutdown; using 1000 ms")
+			interval = time.Second
+		}
+		checkpoints, err := startCheckpointer(driver, uri+options, path, interval)
 		if err != nil {
 			writer.Close()
 			r.Close()

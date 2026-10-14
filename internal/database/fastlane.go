@@ -41,6 +41,14 @@ func (c *fastLaneConn) begin(ctx context.Context) (laneTx, error) {
 
 func (c *fastLaneConn) close() error { return c.conn.Close() }
 
+// walFrames reads the WAL hook the direct connection installed at open: one
+// load of C memory, no statement and no allocation.
+func (c *fastLaneConn) walFrames() int64 { return c.conn.WALFrames() }
+
+// backfillRestart runs PASSIVE then RESTART on the direct connection, between
+// transactions, so the next create resets the WAL.
+func (c *fastLaneConn) backfillRestart() error { return c.conn.CheckpointRestart() }
+
 type fastLaneTx struct {
 	tx *write.WriteTx
 }

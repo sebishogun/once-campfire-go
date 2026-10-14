@@ -125,7 +125,8 @@ func init() {
 // OpenCounting opens a database like Open with every statement the read
 // pool, the write pool and the writer's transactions execute counted into a
 // counter (the checkpointer's connection is counted too, so assertions
-// should pin CAMPFIRE_CHECKPOINT_MS to keep its ticks out of the measured
+// should pin CAMPFIRE_CHECKPOINT_MS and CAMPFIRE_CHECKPOINT_PAGES=0 to keep
+// its ticks and the WAL growth ceiling's restarts out of the measured
 // request). The counter is process-global: exactly one counted database
 // should be open during a measurement. The returned functions report and
 // reset the count and dump the recorded statements; reset between seeding

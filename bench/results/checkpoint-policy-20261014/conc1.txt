@@ -1,0 +1,20 @@
+== ab-before-1 (conc=1)
+rps=3231.9 n=32319 p50=0.26ms p99=0.62ms err=0 invalid=0
+wal bytes sampled: 1034692712 1266306752 1540167272 1783613952 1942802512 2222109672 2489135112 2761471232 3032423032 
+2026/10/14 15:49:33 INFO wal restart summary restarts=0 limit=0
+2026/10/14 15:49:33 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=797217 wal_frames_max=797217 backlog_max=0 busy=0 dur_total_ms=185 dur_max_ms=20 wal_max_kb=3207552
+== ab-before-2 (conc=1)
+rps=3168.0 n=31682 p50=0.27ms p99=0.67ms err=0 invalid=0
+wal bytes sampled: 1046331712 1273281912 1411750992 1693118152 1964720912 2208122272 2446451912 2695172192 2968633072 
+2026/10/14 15:50:01 INFO wal restart summary restarts=0 limit=0
+2026/10/14 15:50:01 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=788293 wal_frames_max=788293 backlog_max=0 busy=0 dur_total_ms=451 dur_max_ms=198 wal_max_kb=3171647
+== ab-after-1 (conc=1)
+rps=3760.2 n=37603 p50=0.23ms p99=0.48ms err=0 invalid=0
+wal bytes sampled: 41278312 41278312 41294792 41294792 41294792 41294792 41294792 41294792 41294792 
+2026/10/14 15:49:47 INFO wal restart summary restarts=87 limit=10000
+2026/10/14 15:49:47 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=42353 wal_frames_max=9489 backlog_max=0 busy=0 dur_total_ms=98 dur_max_ms=12 wal_max_kb=40326
+== ab-after-2 (conc=1)
+rps=3795.7 n=37958 p50=0.23ms p99=0.56ms err=0 invalid=0
+wal bytes sampled: 41278312 41282432 41294792 41294792 41294792 41294792 41294792 41294792 41294792 
+2026/10/14 15:50:15 INFO wal restart summary restarts=88 limit=10000
+2026/10/14 15:50:15 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=40776 wal_frames_max=9130 backlog_max=0 busy=1 dur_total_ms=67 dur_max_ms=12 wal_max_kb=40326

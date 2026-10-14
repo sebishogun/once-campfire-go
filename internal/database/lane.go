@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"database/sql"
+	"sync"
+	"time"
 )
 
 // The write lane's statement surface (ENGINE-55): the message create
@@ -86,6 +88,17 @@ type laneConn interface {
 	// drained and the after-commit count reached zero. The database/sql
 	// lane's pool is closed through DB.Close like every other pool.
 	close() error
+	// walFrames reports the WAL's frame count as of the lane connection's
+	// most recent commit (0 when unavailable). The fastdb lane reads the
+	// connection's WAL hook, so it costs one load; the database/sql lane
+	// probes PRAGMA wal_checkpoint(NOOP), which does no work, at most once
+	// per checkpointProbe. It is the writer's WAL-growth signal.
+	walFrames() int64
+	// backfillRestart runs PASSIVE then RESTART on the lane connection,
+	// between transactions: PASSIVE backfills every frame a reader is not
+	// pinning, and RESTART waits for the readers so the next write resets
+	// the WAL. It is the bounded-growth ceiling's action.
+	backfillRestart() error
 }
 
 // sqlLaneConn is the database/sql lane: the existing write pool, whose
@@ -93,7 +106,19 @@ type laneConn interface {
 // exactly as before.
 type sqlLaneConn struct {
 	db *sql.DB
+	// probeMu guards the WAL probe's throttle state. The database/sql lane
+	// has no WAL hook, so it reads the frame count with
+	// PRAGMA wal_checkpoint(NOOP) — a statement that does no work — and
+	// throttles it to checkpointProbe so a burst of drains cannot turn the
+	// limit check into a per-post statement.
+	probeMu   sync.Mutex
+	probeLast time.Time
+	probeVal  int64
 }
+
+// checkpointProbe bounds how often the database/sql lane reads the WAL frame
+// count with the NOOP pragma.
+const checkpointProbe = 5 * time.Millisecond
 
 func (c *sqlLaneConn) begin(ctx context.Context) (laneTx, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
@@ -104,6 +129,33 @@ func (c *sqlLaneConn) begin(ctx context.Context) (laneTx, error) {
 }
 
 func (c *sqlLaneConn) close() error { return nil }
+
+func (c *sqlLaneConn) walFrames() int64 {
+	c.probeMu.Lock()
+	defer c.probeMu.Unlock()
+	if now := time.Now(); now.Sub(c.probeLast) < checkpointProbe {
+		return c.probeVal
+	}
+	var busy, log, checked int
+	if err := c.db.QueryRow("PRAGMA wal_checkpoint(NOOP)").Scan(&busy, &log, &checked); err != nil {
+		return c.probeVal
+	}
+	c.probeLast = time.Now()
+	c.probeVal = int64(log)
+	return c.probeVal
+}
+
+func (c *sqlLaneConn) backfillRestart() error {
+	for _, pragma := range [...]string{
+		"PRAGMA wal_checkpoint(PASSIVE)",
+		"PRAGMA wal_checkpoint(RESTART)",
+	} {
+		if _, err := c.db.Exec(pragma); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // sqlLaneTx adapts *sql.Tx to the job and lane surfaces with the same calls
 // the create path always made — same SQL texts, same bind order, same

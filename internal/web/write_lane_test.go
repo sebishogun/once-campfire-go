@@ -135,6 +135,9 @@ func TestCreateMessageStatementCount(t *testing.T) {
 	t.Setenv("CAMPFIRE_FASTDB", "off")
 	t.Setenv("CAMPFIRE_FASTDB_WRITE", "off")
 	t.Setenv("CAMPFIRE_CHECKPOINT_MS", "3600000")
+	// The WAL growth ceiling off too: a checkpoint mid-request would add a
+	// statement to the pinned count.
+	t.Setenv("CAMPFIRE_CHECKPOINT_PAGES", "0")
 	t.Setenv("CAMPFIRE_FROZEN_TIME", "2026-01-02T03:04:05Z")
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "test.sqlite3")
@@ -213,6 +216,9 @@ func TestCreateMessageFastWriteStatementCount(t *testing.T) {
 	t.Setenv("CAMPFIRE_FASTDB", "off")
 	t.Setenv("CAMPFIRE_FASTDB_WRITE", "on")
 	t.Setenv("CAMPFIRE_CHECKPOINT_MS", "3600000")
+	// The WAL growth ceiling off too: a checkpoint mid-request would add a
+	// statement to the pinned count.
+	t.Setenv("CAMPFIRE_CHECKPOINT_PAGES", "0")
 	t.Setenv("CAMPFIRE_FROZEN_TIME", "2026-01-02T03:04:05Z")
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "test.sqlite3")

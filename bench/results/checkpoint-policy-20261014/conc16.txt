@@ -1,0 +1,30 @@
+== ab-c16-before-1
+rps=8425.9 n=84270 p50=1.91ms p99=4.77ms err=0 invalid=0
+wal bytes sampled: 1572290912 1974996192 2380033416 2791114632 3197476864 3597579912 4002777792 4410913232 4819054592 
+2026/10/14 15:51:26 INFO wal restart summary restarts=0 limit=0
+2026/10/14 15:51:26 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=1271002 wal_frames_max=1271002 backlog_max=0 busy=0 dur_total_ms=298 dur_max_ms=37 wal_max_kb=5113797
+== ab-c16-before-2
+rps=8391.1 n=83922 p50=1.92ms p99=5.58ms err=0 invalid=0
+wal bytes sampled: 1591823856 2000049912 2417690192 2816642152 3221300312 3628924872 4043034312 4438846832 4853792632 
+2026/10/14 15:51:54 INFO wal restart summary restarts=0 limit=0
+2026/10/14 15:51:54 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=1276810 wal_frames_max=1276810 backlog_max=9 busy=0 dur_total_ms=319 dur_max_ms=32 wal_max_kb=5137165
+== ab-c16-before-3
+rps=8461.6 n=84629 p50=1.92ms p99=4.94ms err=0 invalid=0
+wal bytes sampled: 1586904552 2001953352 2428064352 2840562872 3259739912 3664830464 4042090832 4459080152 4879971112 
+2026/10/14 15:52:22 INFO wal restart summary restarts=0 limit=0
+2026/10/14 15:52:22 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=1286495 wal_frames_max=1286495 backlog_max=6 busy=0 dur_total_ms=244 dur_max_ms=27 wal_max_kb=5176132
+== ab-c16-after-1
+rps=8543.8 n=85449 p50=1.79ms p99=9.76ms err=0 invalid=0
+wal bytes sampled: 43832712 43832712 43832712 43832712 43832712 43832712 43832712 43832712 43832712 
+2026/10/14 15:51:41 INFO wal restart summary restarts=149 limit=10000
+2026/10/14 15:51:41 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=54143 wal_frames_max=9600 backlog_max=9 busy=0 dur_total_ms=123 dur_max_ms=15 wal_max_kb=42805
+== ab-c16-after-2
+rps=8711.3 n=87126 p50=1.74ms p99=9.02ms err=0 invalid=0
+wal bytes sampled: 41776832 41776832 41776832 41776832 41776832 41776832 41822152 41822152 41822152 
+2026/10/14 15:52:08 INFO wal restart summary restarts=144 limit=10000
+2026/10/14 15:52:08 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=54918 wal_frames_max=9481 backlog_max=15 busy=1 dur_total_ms=109 dur_max_ms=11 wal_max_kb=40841
+== ab-c16-after-3
+rps=8870.7 n=88722 p50=1.71ms p99=9.95ms err=0 invalid=0
+wal bytes sampled: 41702672 41702672 41702672 41702672 41702672 41702672 41702672 41702672 41702672 
+2026/10/14 15:52:36 INFO wal restart summary restarts=136 limit=10000
+2026/10/14 15:52:36 INFO wal checkpoint summary checkpoints=14 noops=0 frames_moved=39116 wal_frames_max=8987 backlog_max=0 busy=3 dur_total_ms=83 dur_max_ms=12 wal_max_kb=40725
