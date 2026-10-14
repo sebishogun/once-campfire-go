@@ -182,7 +182,18 @@ twin-database differential test drives identical create workloads (plain, attach
 upload, webhook, queued, and the forbidden/no-creator/FK failure cases) through both lanes and
 compares every touched row byte-for-byte. The flag only affects the queued lane: with
 `CAMPFIRE_WRITE_QUEUE=off` the per-request transaction path stays `database/sql`, exactly as
-before.
+before. Each create-transaction statement that used to cross the cgo boundary once per bind plus
+once each for the step, the last-insert-id read and the reset now crosses once: `csqlite.Stmt.ExecTyped`
+runs the typed binds, the step, the optional rowid capture and the reset inside C
+(`fastdb_write_run`), and `write.WriteStmt`'s `ExecInsertMessage`, `ExecTouchRoom`,
+`ExecInsertRichText`, `ExecInsertAttachment`, `ExecInsertSearchIndex` and `ExecBumpUnread` are
+those fused shapes. The message INSERT drops from eight cgo transitions to one and the rich-text
+INSERT from six to one, pinned by `runtime.NumCgoCall` on a bare write connection in
+`internal/database/cgo_budget_test.go` (the unfused sequence is measured live in the same test,
+not asserted from history) with `testing.AllocsPerRun` at zero. Binding stays `SQLITE_TRANSIENT`
+and no SQLite buffer is read after the reset, so the ownership argument is unchanged; the SQL
+texts, bind order, error mapping and reset-on-every-path reuse are the unfused ones, held by the
+lane differential tests and the `internal/fastdb/write` fused/unfused row comparison.
 `CAMPFIRE_AUTH_FAST` (default `on`; same value shapes and warning on anything else) is the
 auth/session fast path: a bounded in-process cache of verified `session_token` cookie values keeps
 their token and signed expiry, so a previously verified cookie is not re-HMACed and re-decoded on

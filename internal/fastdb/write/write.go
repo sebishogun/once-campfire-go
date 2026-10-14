@@ -325,6 +325,134 @@ type WriteStmt struct {
 	st *csqlite.Stmt
 }
 
+// The fused write shapes (lever 3). Each runs one cached write statement as a
+// single cgo transition — the typed binds, the step, the optional
+// last-insert-id capture and the reset — instead of one transition per bind
+// plus one each for the step, the rowid read and the reset. The arguments are
+// handed to C as plain values and bound with SQLITE_TRANSIENT, so no Go
+// pointer outlives the call and nothing is retained across the reset; the SQL
+// text, the bind order and the resulting rows are exactly what the unfused
+// bind/step/reset sequence produced. Each method resets the statement on every
+// path, so it is reusable by the next job.
+
+// errInsertRow and errUpdateRow are the exact failures the unfused lane
+// reported when a statement that must not return rows did; they stay distinct
+// so callers and tests see the same text.
+var (
+	errInsertRow = errors.New("fastdb write: INSERT returned a row")
+	errUpdateRow = errors.New("fastdb write: UPDATE returned a row")
+)
+
+// ExecInsertMessage runs the message INSERT fused: it binds
+// (?=client_message_id, ?=creator_id, ?=room_id, ?=created_at, ?=updated_at)
+// and returns the new row id, all in one transition.
+func (s *WriteStmt) ExecInsertMessage(client string, user, room int64, stamp string) (int64, error) {
+	id, row, err := s.st.ExecTyped(true,
+		csqlite.Arg{Kind: csqlite.ArgText, Text: client},
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: user},
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: room},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: stamp},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: stamp},
+	)
+	if err != nil {
+		return 0, err
+	}
+	if row {
+		return 0, errInsertRow
+	}
+	return id, nil
+}
+
+// ExecTouchRoom runs the room-touch UPDATE fused: it binds (?=updated_at,
+// ?=id).
+func (s *WriteStmt) ExecTouchRoom(room int64, stamp string) error {
+	_, row, err := s.st.ExecTyped(false,
+		csqlite.Arg{Kind: csqlite.ArgText, Text: stamp},
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: room},
+		csqlite.Arg{}, csqlite.Arg{}, csqlite.Arg{},
+	)
+	if err != nil {
+		return err
+	}
+	if row {
+		return errUpdateRow
+	}
+	return nil
+}
+
+// ExecInsertRichText runs the rich-text INSERT fused: it binds (?=record_id,
+// ?=body, ?=created_at, ?=updated_at).
+func (s *WriteStmt) ExecInsertRichText(id int64, body, stamp string) error {
+	_, row, err := s.st.ExecTyped(false,
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: id},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: body},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: stamp},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: stamp},
+		csqlite.Arg{},
+	)
+	if err != nil {
+		return err
+	}
+	if row {
+		return errInsertRow
+	}
+	return nil
+}
+
+// ExecInsertAttachment runs the attachment INSERT fused: it binds (?=blob_id,
+// ?=record_id, ?=created_at).
+func (s *WriteStmt) ExecInsertAttachment(blob, id int64, stamp string) error {
+	_, row, err := s.st.ExecTyped(false,
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: blob},
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: id},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: stamp},
+		csqlite.Arg{}, csqlite.Arg{},
+	)
+	if err != nil {
+		return err
+	}
+	if row {
+		return errInsertRow
+	}
+	return nil
+}
+
+// ExecInsertSearchIndex runs the search-index INSERT fused: it binds
+// (?=rowid, ?=body).
+func (s *WriteStmt) ExecInsertSearchIndex(id int64, plain string) error {
+	_, row, err := s.st.ExecTyped(false,
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: id},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: plain},
+		csqlite.Arg{}, csqlite.Arg{}, csqlite.Arg{},
+	)
+	if err != nil {
+		return err
+	}
+	if row {
+		return errInsertRow
+	}
+	return nil
+}
+
+// ExecBumpUnread runs the unread-bump UPDATE fused: it binds (?=unread_at,
+// ?=updated_at, ?=room_id, ?=user_id, ?=connected_at cutoff).
+func (s *WriteStmt) ExecBumpUnread(room, user int64, stamp, cutoff string) error {
+	_, row, err := s.st.ExecTyped(false,
+		csqlite.Arg{Kind: csqlite.ArgText, Text: stamp},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: stamp},
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: room},
+		csqlite.Arg{Kind: csqlite.ArgInt, Int: user},
+		csqlite.Arg{Kind: csqlite.ArgText, Text: cutoff},
+	)
+	if err != nil {
+		return err
+	}
+	if row {
+		return errUpdateRow
+	}
+	return nil
+}
+
 // BindInt64 binds parameter i (1-based) as an integer.
 func (s *WriteStmt) BindInt64(i int, v int64) error { return s.st.BindInt64(i, v) }
 

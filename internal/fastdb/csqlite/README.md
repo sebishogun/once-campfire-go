@@ -1,8 +1,11 @@
 # csqlite
 
 Minimal direct-SQLite binding used by `internal/fastdb`. It provides only the
-C API calls the read layer needs: `sqlite3_open_v2`, `prepare_v2`, `bind_*`,
-`step`, `column_*`, `reset`, `clear_bindings`, `finalize` and `busy_timeout`.
+C API calls the read and write layers need: `sqlite3_open_v2`, `prepare_v2`,
+`bind_*`, `step`, `column_*`, `reset`, `clear_bindings`, `finalize` and
+`busy_timeout`, plus one fused helper that runs a whole write statement
+sequence in a single cgo transition — `fastdb_write_run` (typed binds, step,
+last-insert-rowid, reset).
 
 ## Where SQLite comes from
 
@@ -39,4 +42,10 @@ declarations.
 - `ColumnBytes` returns a view of SQLite-owned memory that is valid only until
   the next `Step`, `Reset` or `Finalize`. `ColumnText` and fastdb's
   `ColumnTextInto` copy into Go memory first.
+- `ExecTyped` binds its text arguments through the same `SQLITE_TRANSIENT`
+  helper, so SQLite copies them during the call; `runtime.KeepAlive` pins each
+  string across it. Its `fastdb_write_run` reads `sqlite3_last_insert_rowid`
+  (an integer, not a row buffer) after the step and before the reset, and
+  returns without resetting on a bind or step failure so the caller can map
+  `sqlite3_errmsg` while it is still current.
 - No Go pointer is stored in C memory at any point.
