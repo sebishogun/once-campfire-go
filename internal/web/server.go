@@ -1206,7 +1206,8 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request, u databas
 	markup := b.String()
 	// Delivery follows commit and outlives a disconnected posting request. Each
 	// post-commit stage owns its budget and opens it when it starts its own
-	// work (Lever 5): the broadcast's is opened here, the unread bump and the
+	// work (Lever 5): the broadcast's is opened here, for every post, because
+	// its recipient snapshot lives inside the hub; the unread bump and the
 	// webhook lookup open theirs only when they have something to do, so a slow
 	// or failing broadcast cannot consume a later stage's opportunity to run.
 	broadcastCtx, cancelBroadcast := context.WithTimeout(context.Background(), deliveryTimeout)

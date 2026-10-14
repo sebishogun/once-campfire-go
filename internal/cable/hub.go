@@ -234,15 +234,17 @@ type Hub struct {
 	roomStreams  map[int64]map[*client][]string
 	namedStreams map[string]map[*client][]string
 	// unreadByUser is the ACTIVE unread-subscription index (Lever 5): for each
-	// user with a live client, the clients holding an UnreadRoomsChannel
-	// subscription — the `user_<id>_unreads` stream, derived at subscribe time
-	// from the client's own user — with the subscription identifiers that match
-	// it. PublishUnreadBump intersects it with the room's members, so the
-	// candidate set is the room's own subscribers and never the server's: a
-	// post to a two-person room does no work for an unrelated subscriber
-	// anywhere else, and a post with no unread subscriber on the server at all
-	// returns on a locked length check. Maintained under mu exactly like the
-	// two maps above.
+	// user whose unread stream has subscribers, the clients holding a
+	// subscription to `user_<id>_unreads` — the canonical UnreadRoomsChannel
+	// subscription or a signed Turbo::StreamsChannel alias for the same name —
+	// with the subscription identifiers that match it. The key is the stream's
+	// TARGET user, taken from the stream name, so an alias names the same
+	// subscription the generic publication would deliver to.
+	// PublishUnreadBump intersects it with the room's members, so the candidate
+	// set is the room's own subscribers and never the server's: a post to a
+	// two-person room does no work for an unrelated subscriber anywhere else,
+	// and a post with no unread subscriber on the server at all returns on a
+	// locked length check. Maintained under mu exactly like the two maps above.
 	unreadByUser map[int64]map[*client][]string
 	cache        *frameCache
 	authz        *authzCache
@@ -329,6 +331,36 @@ func (h *Hub) register(c *client) {
 	h.mu.Unlock()
 }
 
+// unreadStreamName is the stream the reference's unread broadcast publishes to
+// for one user: `user_<id>_unreads`. It is the subscription's identity, not
+// its channel: UnreadRoomsChannel derives it, and a signed
+// Turbo::StreamsChannel subscription may carry the same name, so the index and
+// the publication both key on the name.
+func unreadStreamName(user int64) string {
+	return "user_" + strconv.FormatInt(user, 10) + "_unreads"
+}
+
+// unreadStreamUser reports the target user of an unread stream name, and
+// whether the name is one at all. The target comes from the NAME, never from
+// the subscribing client: a signed alias may name another user's stream, and
+// the generic publish path delivers to it on the signed name's authority
+// alone, so the unread bump must treat it as the same subscription.
+func unreadStreamUser(stream string) (int64, bool) {
+	rest, ok := strings.CutPrefix(stream, "user_")
+	if !ok {
+		return 0, false
+	}
+	rest, ok = strings.CutSuffix(rest, "_unreads")
+	if !ok {
+		return 0, false
+	}
+	user, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return user, true
+}
+
 // indexAddLocked mirrors one subscription into the publish index; the caller
 // holds h.mu (write).
 func (h *Hub) indexAddLocked(c *client, identifier string, sub subscription) {
@@ -348,11 +380,11 @@ func (h *Hub) indexAddLocked(c *client, identifier string, sub subscription) {
 		}
 		m[c] = append(m[c], identifier)
 	}
-	if sub.Channel == "UnreadRoomsChannel" {
-		m := h.unreadByUser[c.user.ID]
+	if user, ok := unreadStreamUser(sub.Stream); ok {
+		m := h.unreadByUser[user]
 		if m == nil {
 			m = make(map[*client][]string)
-			h.unreadByUser[c.user.ID] = m
+			h.unreadByUser[user] = m
 		}
 		m[c] = append(m[c], identifier)
 	}
@@ -383,12 +415,12 @@ func (h *Hub) indexRemoveLocked(c *client, identifier string, sub subscription) 
 			}
 		}
 	}
-	if sub.Channel == "UnreadRoomsChannel" {
-		if m := h.unreadByUser[c.user.ID]; m != nil {
+	if user, ok := unreadStreamUser(sub.Stream); ok {
+		if m := h.unreadByUser[user]; m != nil {
 			if ids := removeIdentifier(m[c], identifier); len(ids) == 0 {
 				delete(m, c)
 				if len(m) == 0 {
-					delete(h.unreadByUser, c.user.ID)
+					delete(h.unreadByUser, user)
 				}
 			} else {
 				m[c] = ids
@@ -768,13 +800,17 @@ func (h *Hub) PublishStream(ctx context.Context, name string, message any) {
 // recipient is one delivery target of a publish: the client, the subscription
 // identifier of the matching subscription, and the authorization scope. user
 // is the authorized session user for the (room, token) pair, filled by the
-// authorization pass; 0 means unauthorized (the client is cancelled).
+// authorization pass; 0 means unauthorized (the client is cancelled). target is
+// the user whose stream the subscription names, when the recipient came from
+// the unread index: the unread bump rechecks that user's membership, while the
+// session is always the client's own.
 type recipient struct {
 	client     *client
 	identifier string
 	room       int64
 	scope      string
 	user       int64
+	target     int64
 }
 
 // authzKey identifies one publication authorization: a session token in a
@@ -960,24 +996,34 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 }
 
 // publishScratch is the per-publish working set: the wire-frame bytes, the
-// recipient snapshot and (for the unread bump) the recipient session tokens.
-// Pooled so a steady-state broadcast allocates nothing beyond the frame itself
-// (ENGINE-57): wrap holds the once-escaped frame JSON, recips the recipients,
-// tokens the tokens handed to the bulk authorization query. A pooled scratch
-// is private to one publish — the frame cache clones whatever bytes it
-// retains (NewPreparedMessage copies, cache entries own their frames) — so
-// reuse is safe.
+// recipient snapshot and (for the unread bump) the recipient session tokens and
+// their target users. Pooled so a steady-state broadcast allocates nothing
+// beyond the frame itself (ENGINE-57): wrap holds the once-escaped frame JSON,
+// recips the recipients, tokens the tokens handed to the bulk authorization
+// query, targets the target users handed to the bulk membership recheck. A
+// pooled scratch is private to one publish — the frame cache clones whatever
+// bytes it retains (NewPreparedMessage copies, cache entries own their frames)
+// — so reuse is safe.
 type publishScratch struct {
-	wrap   []byte
-	recips []recipient
-	tokens []string
+	wrap    []byte
+	recips  []recipient
+	tokens  []string
+	targets []int64
 }
 
 var publishScratchPool = sync.Pool{
 	New: func() any {
-		return &publishScratch{wrap: make([]byte, 0, 1024), recips: make([]recipient, 0, 64), tokens: make([]string, 0, 64)}
+		return &publishScratch{wrap: make([]byte, 0, 1024), recips: make([]recipient, 0, 64), tokens: make([]string, 0, 64), targets: make([]int64, 0, 64)}
 	},
 }
+
+// unreadBumpAfterSnapshot, when non-nil, runs inside PublishUnreadBump after
+// the recipient snapshot is taken and before any eligibility is read. Tests use
+// it to place a membership removal, a session revocation or a subscribe exactly
+// on that boundary; production leaves it nil, and only a bump that found
+// recipients reaches the check. It is a synchronization point for tests, never
+// a behaviour switch.
+var unreadBumpAfterSnapshot func()
 
 // memoEntry is one per-publish identifier→frame memo slot; frameMemoLen is
 // the stack-array bound before a publish falls back to a map for its memo.
@@ -1015,7 +1061,7 @@ func (h *Hub) publish(ctx context.Context, room int64, name string, message any)
 		}
 		for c, ids := range m {
 			for _, identifier := range ids {
-				recipients = append(recipients, recipient{c, identifier, room, scope, 0})
+				recipients = append(recipients, recipient{client: c, identifier: identifier, room: room, scope: scope})
 			}
 		}
 	}
@@ -1026,7 +1072,7 @@ func (h *Hub) publish(ctx context.Context, room int64, name string, message any)
 		}
 		for c, ids := range m {
 			for _, identifier := range ids {
-				recipients = append(recipients, recipient{c, identifier, 0, name, 0})
+				recipients = append(recipients, recipient{client: c, identifier: identifier, scope: name})
 			}
 		}
 	}
@@ -1147,27 +1193,44 @@ func roomScope(room int64) string { return "room:" + strconv.FormatInt(room, 10)
 
 // PublishUnreadBump notifies the members of room that a message bumped their
 // unread count — the reference's unread broadcast, which the posting request
-// runs after the message commits. It is bounded by budget, applied only once
-// the publication starts its own work: an idle bump opens no timer and
-// allocates nothing, and a slow earlier stage cannot leave it with a spent
-// budget (the budget is measured from here, never inherited).
+// runs after the message commits. It is bounded by budget, applied once the
+// publication knows it has recipients: a bump with no unread subscriber on the
+// server allocates nothing, and a slow earlier stage cannot leave it with a
+// spent budget (the budget is measured from here, never inherited). A bump that
+// does have a candidate opens a timer and reads the room's members even when
+// that room's members turn out to be unsubscribed: the candidate set is the
+// room's membership, so knowing it requires reading it.
 //
 // Candidate selection is room-relevant. The room's members (one read, the same
 // read the per-member fan-out always did) are intersected with the hub's
 // ACTIVE unread subscriptions, so a small room pays for its own members and
 // never for every unread subscriber on the server: an unrelated subscriber
 // costs no token, no row and no lock-held work. A large room pays the member
-// read it always paid, then ONE bulk authorization and one shared frame
-// instead of a publish, an authorization pass and a frame per member.
+// read it always paid, then two bulk queries and one shared frame instead of a
+// publish, an authorization pass and a frame per member.
 //
-// The recipients are resolved in one uncached authorization query over the
-// deduplicated session tokens and rechecked on every call. A token with no
-// live authorized session is a revoked, deleted or banned client, whose client
-// is stopped exactly as the generic publish path stops an unauthorized
-// recipient. The query is deliberately session-only (room 0): membership is
-// the candidate set, so a member removed from the room between the read and
-// the query is skipped rather than disconnected, and a failed read delivers
-// nothing and stops nobody.
+// That trade is not a blanket win in bytes: the bulk token encoding and the
+// authorization map cost more bytes than the per-member frames did at a
+// hundred subscribed members, while allocating fewer objects. It buys one
+// frame per identifier, one lock-free authorization pass and a candidate set
+// that cannot grow with unrelated subscribers; the byte-heavy step is
+// AuthorizedSessions, which every room broadcast shares.
+//
+// Eligibility is re-read, never cached, and the two failure modes are kept
+// apart:
+//
+//   - Session validity is a property of the CLIENT's session token, resolved
+//     first by one bulk query over the deduplicated tokens. A token with no
+//     live authorized session is a revoked, deleted or banned client, and its
+//     client is stopped exactly as the generic publish path stops an
+//     unauthorized recipient.
+//   - Membership is a property of the subscription's TARGET user (the user the
+//     stream name names), re-read after the candidate snapshot. A member
+//     removed in the meantime — by the audited helpers or by a foreign writer
+//     on another SQLite connection — is skipped: no frame, no disconnect. The
+//     candidate read alone cannot answer this, because it happened earlier.
+//
+// A failed read delivers nothing and stops nobody.
 //
 // Concurrency: the RLock that snapshots the recipients is the publication's
 // concurrency point. indexAddLocked (a subscribe) needs the write lock, so a
@@ -1177,8 +1240,8 @@ func roomScope(room int64) string { return "room:" + strconv.FormatInt(room, 10)
 // client on the server holds an unread subscription, so no already-registered
 // subscriber can be part of it: the shortcut cannot drop a frame either.
 func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
-	// The shortcut: no unread subscriber anywhere means no member read, no
-	// payload map, no stream name and no timer.
+	// The shortcut: no unread subscriber on the server means no member read,
+	// no payload map, no stream name and no timer.
 	h.mu.RLock()
 	idle := len(h.unreadByUser) == 0
 	h.mu.RUnlock()
@@ -1198,8 +1261,9 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	wrap := scratch.wrap[:0]
 	recipients := scratch.recips[:0]
 	tokens := scratch.tokens[:0]
+	targets := scratch.targets[:0]
 	defer func() {
-		scratch.wrap, scratch.recips, scratch.tokens = wrap, recipients, tokens
+		scratch.wrap, scratch.recips, scratch.tokens, scratch.targets = wrap, recipients, tokens, targets
 		publishScratchPool.Put(scratch)
 	}()
 	h.mu.RLock()
@@ -1212,11 +1276,12 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 		if scope == "" {
 			scope = roomScope(room)
 		}
+		targets = append(targets, member)
 		for c, identifiers := range m {
 			// One token per client: a client's identifiers share its session.
 			tokens = append(tokens, c.token)
 			for _, identifier := range identifiers {
-				recipients = append(recipients, recipient{client: c, identifier: identifier, room: room, scope: scope})
+				recipients = append(recipients, recipient{client: c, identifier: identifier, room: room, scope: scope, target: member})
 			}
 		}
 	}
@@ -1224,15 +1289,19 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	if len(recipients) == 0 {
 		return nil
 	}
-	// One token per distinct session, however many tabs or identifiers a
-	// client holds: sorting in place keeps this allocation-free.
+	if unreadBumpAfterSnapshot != nil {
+		unreadBumpAfterSnapshot()
+	}
+	// Session validity first, so a revoked client is disconnected whatever its
+	// room eligibility is — the generic publish path's rule for any recipient
+	// it holds. One token per distinct session, however many tabs or
+	// identifiers a client holds: sorting in place keeps this allocation-free.
 	slices.Sort(tokens)
 	tokens = slices.Compact(tokens)
 	allowed, err := h.db.AuthorizedSessions(ctx, tokens, 0)
 	if err != nil {
 		return err
 	}
-	// Compact in place: keep only live sessions, stop the rest.
 	kept := recipients[:0]
 	for i := range recipients {
 		r := &recipients[i]
@@ -1244,10 +1313,28 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 		r.user = user
 		kept = append(kept, *r)
 	}
-	if len(kept) == 0 {
+	recipients = kept
+	if len(recipients) == 0 {
 		return nil
 	}
-	wrap = h.fanout(kept, map[string]any{"roomId": room}, wrap)
+	// Membership eligibility, re-read now: a target removed from the room since
+	// the candidate read is skipped — no frame and no disconnect — because the
+	// candidate read happened earlier and cannot answer for the present.
+	still, err := h.db.RoomMembersAmong(ctx, room, targets)
+	if err != nil {
+		return err
+	}
+	kept = recipients[:0]
+	for i := range recipients {
+		if _, ok := still[recipients[i].target]; ok {
+			kept = append(kept, recipients[i])
+		}
+	}
+	recipients = kept
+	if len(recipients) == 0 {
+		return nil
+	}
+	wrap = h.fanout(recipients, map[string]any{"roomId": room}, wrap)
 	return nil
 }
 
@@ -1268,7 +1355,7 @@ func (h *Hub) subscription(ctx context.Context, c *client, identifier string) (s
 		sub.Stream = fmt.Sprintf("user_%d_reads", c.user.ID)
 		return sub, true
 	case "UnreadRoomsChannel":
-		sub.Stream = fmt.Sprintf("user_%d_unreads", c.user.ID)
+		sub.Stream = unreadStreamName(c.user.ID)
 		return sub, true
 	case "RoomMessagesChannel":
 		name, err := h.secrets.VerifyStream(params.Signed)

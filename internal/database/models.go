@@ -553,3 +553,30 @@ func (d *DB) AuthorizedSessions(
 	}
 	return result, rows.Err()
 }
+
+// RoomMembersAmong returns which of userIDs are currently members of room, in
+// one snapshot. It is the membership recheck a publication runs after its
+// candidate read: the candidate read established membership at an earlier
+// instant, so a member removed in between must be recognised here and skipped
+// rather than notified. json_each keeps the SQL shape stable and avoids
+// SQLite's placeholder limit.
+func (d *DB) RoomMembersAmong(ctx context.Context, room int64, userIDs []int64) (map[int64]struct{}, error) {
+	raw, err := json.Marshal(userIDs)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.Read.QueryContext(ctx, "SELECT user_id FROM memberships WHERE room_id=? AND user_id IN (SELECT value FROM json_each(?))", room, string(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[int64]struct{}, len(userIDs))
+	for rows.Next() {
+		var user int64
+		if err := rows.Scan(&user); err != nil {
+			return nil, err
+		}
+		result[user] = struct{}{}
+	}
+	return result, rows.Err()
+}
