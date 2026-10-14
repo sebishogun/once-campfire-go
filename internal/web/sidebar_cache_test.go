@@ -208,7 +208,7 @@ func TestSidebarHitServesWithBrokenSidebarTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, ok := app.sidebarPages.get(sidebarPageKey(gate.version, gate.generation, authed, false))
+	entry, ok := app.sidebarPages.get(appendSidebarPageKey(nil, gate.version, gate.generation, authed, false))
 	if !ok {
 		t.Fatal("first sidebar stored no whole-page entry")
 	}
@@ -235,7 +235,7 @@ func TestSidebarHitServesWithBrokenSidebarTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry.key = sidebarPageKey(gate.version, generation, authed, false)
+	entry.key = appendSidebarPageKey(nil, gate.version, generation, authed, false)
 	app.sidebarPages.put(entry)
 	app.sidebarGates.Store(user.ID, servedGate{version: gate.version, generation: generation, frameKey: gate.frameKey})
 	status, hit := getSidebar(t, server, cookie)

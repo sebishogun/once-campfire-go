@@ -216,13 +216,13 @@ type page struct {
 	// from any connection invalidates the served gate.
 	gateVersion    uint64
 	gateGeneration uint64
-	Title, Error string
-	User         database.User
-	Room         database.Room
-	Rooms        []database.Room
-	Messages     []messageView
-	Setup        bool
-	Query        string
+	Title, Error   string
+	User           database.User
+	Room           database.Room
+	Rooms          []database.Room
+	Messages       []messageView
+	Setup          bool
+	Query          string
 }
 type messageView struct {
 	AllEmoji                         bool
@@ -606,6 +606,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	normalizeScalarParams(r)
 	s.routeHTTP(w, r)
 }
+
 // Matches Rust's token-free unsafe-request policy. An explicitly empty header is
 // malformed, not the plain-HTTP compatibility case where the header is absent.
 func (s *Server) browserWriteAllowed(r *http.Request) bool {
@@ -1244,14 +1245,16 @@ func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User
 	if generationOK {
 		if gate, ok := s.sidebarGate(u.ID); ok && gate.version == version && gate.generation == generation {
 			if frame, ok := s.fragments.get(gate.frameKey); ok {
-			// Whole-page serve: the gate version covers every page input,
-			// so the precompressed document built for it is the page this
-			// request would render. A session flash is per-request state
-			// and never cached; requests carrying one render fresh.
-			state := browserState(r)
-			state.load()
-			if state.values["flash"] == nil {
-					if entry, ok := s.sidebarPages.get(sidebarPageKey(version, generation, u, r.Header.Get("Turbo-Frame") != "")); ok {
+				// Whole-page serve: the gate version covers every page input,
+				// so the precompressed document built for it is the page this
+				// request would render. A session flash is per-request state
+				// and never cached; requests carrying one render fresh.
+				state := browserState(r)
+				state.load()
+				if state.values["flash"] == nil {
+					var pageKeyBuf [256]byte
+					pageKey := appendSidebarPageKey(pageKeyBuf[:0], version, generation, u, r.Header.Get("Turbo-Frame") != "")
+					if entry, ok := s.sidebarPages.get(pageKey); ok {
 						s.serveSidebarPage(w, r, entry)
 						return
 					}

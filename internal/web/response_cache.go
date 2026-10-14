@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"container/list"
+	"crypto/sha256"
 	"net/http"
 	"os"
 	"sort"
@@ -34,12 +35,15 @@ import (
 // writes; a committed write moves the generation and both the old entries and
 // the next fill age out exactly as the sidebar gate does (single-process
 // observation limit, README.md). The entry cost gate and LRU are the same
-// shape as the fragment cache's. Search and sidebar are deliberately absent
-// (see beginResponseCache): their own caches serve the warm shape faster than
-// a response-cache round would.
+// shape as the fragment cache's. The sidebar is deliberately absent (see
+// beginResponseCache): its own whole-page cache already serves the warm shape.
+// Search takes part in the round; its own result cache still serves the miss
+// path, and the response key covers the query and the generation so a purge or
+// a write moves the served bytes.
 
 type cachedResponse struct {
-	key     string
+	digest  [32]byte
+	key     []byte
 	version uint64
 	body    []byte
 	header  http.Header
@@ -47,7 +51,7 @@ type cachedResponse struct {
 }
 type responseCache struct {
 	mu           sync.Mutex
-	entries      map[string]*list.Element
+	entries      map[[32]byte]*list.Element
 	order        list.List
 	limit, size  int
 	version      uint64
@@ -56,14 +60,18 @@ type responseCache struct {
 type responseRound struct {
 	version          uint64
 	user             int64
-	key              string
+	keyed            bool
 	gzip, hit, flash bool
 }
 
 func newResponseCache(limit int) *responseCache {
-	return &responseCache{limit: limit, entries: make(map[string]*list.Element)}
+	return &responseCache{limit: limit, entries: make(map[[32]byte]*list.Element)}
 }
-func (c *responseCache) get(key string, version uint64) *cachedResponse {
+
+// get looks a completed response up by the digest of its exact key bytes. A
+// digest hit is confirmed against the stored key bytes, so a hash collision
+// reads as a miss rather than another request's page.
+func (c *responseCache) get(digest [32]byte, key []byte, version uint64) *cachedResponse {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if version < c.version {
@@ -71,18 +79,24 @@ func (c *responseCache) get(key string, version uint64) *cachedResponse {
 		return nil
 	}
 	if version != c.version {
-		c.entries = make(map[string]*list.Element)
+		c.entries = make(map[[32]byte]*list.Element)
 		c.order.Init()
 		c.size = 0
 		c.version = version
 	}
-	if element := c.entries[key]; element != nil {
-		c.order.MoveToFront(element)
-		c.hits++
-		return element.Value.(*cachedResponse)
+	element := c.entries[digest]
+	if element == nil {
+		c.misses++
+		return nil
 	}
-	c.misses++
-	return nil
+	entry := element.Value.(*cachedResponse)
+	if !bytes.Equal(entry.key, key) {
+		c.misses++
+		return nil
+	}
+	c.order.MoveToFront(element)
+	c.hits++
+	return entry
 }
 func (c *responseCache) put(entry *cachedResponse) {
 	c.mu.Lock()
@@ -90,17 +104,17 @@ func (c *responseCache) put(entry *cachedResponse) {
 	if entry.version != c.version || len(entry.key) > 8192 || entry.cost > c.limit/8 {
 		return
 	}
-	if c.entries[entry.key] != nil {
+	if c.entries[entry.digest] != nil {
 		return
 	}
 	for c.size+entry.cost > c.limit && c.order.Len() > 0 {
 		oldest := c.order.Back()
 		old := oldest.Value.(*cachedResponse)
-		delete(c.entries, old.key)
+		delete(c.entries, old.digest)
 		c.order.Remove(oldest)
 		c.size -= old.cost
 	}
-	c.entries[entry.key] = c.order.PushFront(entry)
+	c.entries[entry.digest] = c.order.PushFront(entry)
 	c.size += entry.cost
 }
 func (c *responseCache) counters() (hits, misses uint64) {
@@ -139,12 +153,12 @@ func (s *Server) beginResponseCache(r *http.Request) {
 	}
 	switch route.Endpoint {
 	// The sidebar is absent: its own whole-page cache already serves warm
-	// requests. Search is absent too: its result cache (ENGINE-30) already
-	// serves the read with no database work, and the response-cache round —
-	// a generation read plus a key — measured slower than that path on the
-	// warm shape. Both routes stay byte-identical, served by their own
-	// caches.
-	case "rooms#show", "messages#index":
+	// requests. Search takes part: the round stores the search page's wire
+	// bytes, and the key covers the query and the observed generation, so a
+	// POST/DELETE that purges the result cache (and commits) moves the
+	// generation and the next GET misses. The result cache still serves the
+	// miss path.
+	case "rooms#show", "messages#index", "searches#index":
 	default:
 		return
 	}
@@ -177,22 +191,27 @@ func (s *Server) responseHit(r *http.Request) *cachedResponse {
 	if err != nil || version != round.version {
 		return nil
 	}
-	round.key = responseCacheKey(info, r, round, version)
-	if len(round.key) > 8192 {
+	// The key is built into a stack buffer and hashed in place: the map key is
+	// the digest, and a hit is confirmed against the entry's stored key bytes.
+	// A lookup therefore allocates nothing; only an admission copies the key.
+	var buf [1536]byte
+	key := appendResponseCacheKey(buf[:0], info, r, round, version)
+	if len(key) > 8192 {
 		return nil
 	}
-	entry := s.responses.get(round.key, version)
+	round.keyed = true
+	entry := s.responses.get(sha256.Sum256(key), key, version)
 	round.hit = entry != nil
 	return entry
 }
 
-// responseCacheKey builds the cache key deterministically in a stack buffer:
-// every input is length-prefixed, so the key cannot alias different inputs.
-// It replaces the original json.Marshal (which spent ~5% of a warm room
-// route's samples) with zero per-request allocation on the common paths.
-func responseCacheKey(info *requestInfo, r *http.Request, round *responseRound, version uint64) string {
-	var buf [1536]byte
-	b := buf[:0]
+// appendResponseCacheKey appends the length-prefixed cache key to b and
+// returns it: every input is length-prefixed, so the key cannot alias
+// different inputs. It replaces the original json.Marshal (which spent ~5% of
+// a warm room route's samples) and then the string-returning builder (which
+// allocated once per request); the caller hashes the returned bytes into a
+// [32]byte map key, so the per-request path allocates nothing.
+func appendResponseCacheKey(b []byte, info *requestInfo, r *http.Request, round *responseRound, version uint64) []byte {
 	field := func(value string) {
 		b = strconv.AppendInt(b, int64(len(value)), 10)
 		b = append(b, ':')
@@ -202,18 +221,58 @@ func responseCacheKey(info *requestInfo, r *http.Request, round *responseRound, 
 	field(info.host)
 	field(info.origin)
 	field(r.RequestURI)
-	field(r.URL.RequestURI())
+	if r.RequestURI == "" {
+		// A server request always carries the raw request-target, and the
+		// parsed URL is derived from it, so the normalized reconstruction is
+		// redundant then. When it is absent (a synthesized request), cover the
+		// parsed parts instead. r.URL.RequestURI() would append the same bytes
+		// but allocates a string per call.
+		field(r.URL.EscapedPath())
+		field(r.URL.RawQuery)
+	}
 	if len(r.Form) > 0 {
-		keys := make([]string, 0, len(r.Form))
+		// The form is written in sorted key order so the key is independent of
+		// map iteration order. The keys are sorted in a stack array; only a
+		// form with more than 16 distinct keys (never an admitted GET) falls
+		// back to a heap slice. sort.Strings would force the stack array
+		// through an interface and escape, so the insertion sort is inline.
+		var fixed [16]string
+		n := 0
+		overflow := false
 		for key := range r.Form {
-			keys = append(keys, key)
+			if n == len(fixed) {
+				overflow = true
+				break
+			}
+			i := n
+			for i > 0 && fixed[i-1] > key {
+				fixed[i] = fixed[i-1]
+				i--
+			}
+			fixed[i] = key
+			n++
 		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			for _, value := range r.Form[key] {
-				b = append(b, '&')
-				field(key)
-				field(value)
+		if overflow {
+			keys := make([]string, 0, len(r.Form))
+			for key := range r.Form {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				for _, value := range r.Form[key] {
+					b = append(b, '&')
+					field(key)
+					field(value)
+				}
+			}
+		} else {
+			for i := 0; i < n; i++ {
+				key := fixed[i]
+				for _, value := range r.Form[key] {
+					b = append(b, '&')
+					field(key)
+					field(value)
+				}
 			}
 		}
 	}
@@ -237,7 +296,7 @@ func responseCacheKey(info *requestInfo, r *http.Request, round *responseRound, 
 	}
 	field(os.Getenv("GIT_REVISION"))
 	b = strconv.AppendUint(b, version, 10)
-	return string(b)
+	return b
 }
 
 // serveCached writes a cache hit: the stored entity headers onto the live
@@ -279,7 +338,7 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 		return
 	}
 	round := info.response
-	if round.hit || round.flash || round.key == "" || r.Method != "GET" || w.status != 200 || w.exception {
+	if round.hit || round.flash || !round.keyed || r.Method != "GET" || w.status != 200 || w.exception {
 		return
 	}
 	if w.wireEncoding != "" && w.wireEncoding != "gzip" || w.wireEncoding == "gzip" != round.gzip {
@@ -302,10 +361,6 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 			return
 		}
 	}
-	version, err := s.DB.ResponseVersion(r.Context())
-	if err != nil || version != round.version {
-		return
-	}
 	wire := w.encoded
 	var joined []byte
 	if wire == nil && len(w.parts) > 0 {
@@ -322,7 +377,12 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 	if wire == nil {
 		wire = w.body.Bytes()
 	}
-	if len(wire) == 0 || len(wire)+len(round.key)+1024 > s.responses.limit/8 {
+	// The key is rebuilt into a stack buffer (the same bytes responseHit
+	// hashed) so the entry can keep the exact key without a per-request copy;
+	// only the admission clones it.
+	var keyBuf [1536]byte
+	key := appendResponseCacheKey(keyBuf[:0], info, r, round, round.version)
+	if len(key) > 8192 || len(wire) == 0 || len(wire)+len(key)+1024 > s.responses.limit/8 {
 		return
 	}
 	header := make(http.Header)
@@ -351,7 +411,7 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 	if !strings.Contains(header.Get("Vary"), "Accept-Encoding") {
 		header.Add("Vary", "Accept-Encoding")
 	}
-	entry := &cachedResponse{key: round.key, version: round.version, body: bytes.Clone(wire), header: header}
+	entry := &cachedResponse{digest: sha256.Sum256(key), key: bytes.Clone(key), version: round.version, body: bytes.Clone(wire), header: header}
 	entry.cost = cap(entry.body) + len(entry.key) + 1024
 	for name, values := range header {
 		entry.cost += len(name)
@@ -359,7 +419,14 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 			entry.cost += len(value)
 		}
 	}
-	version, err = s.DB.ResponseVersion(r.Context())
+	// The single fresh generation read of the admission window: a commit since
+	// the pre-read round must not be admitted under the old generation. The
+	// hit path's own fresh read rejects a commit between the round and the hit;
+	// this one rejects a commit that landed during the render. The two reads
+	// the store used to take (one before the wire assembly, one here) were
+	// redundant — both compared against the same pre-read generation — so the
+	// store now takes exactly one, as late as possible before the put.
+	version, err := s.DB.ResponseVersion(r.Context())
 	if err == nil && version == round.version {
 		s.responses.put(entry)
 	}
