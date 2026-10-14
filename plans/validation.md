@@ -823,3 +823,34 @@ Verification: full suite and race suite green on the fixed tree. The shared
 harness re-measurement was taken while unrelated services (Elasticsearch and
 minio) held the host at load 23-54, so those numbers are discarded; a quiet
 host re-run is pending.
+
+## Matched measurement (2026-10-14, train 34782d0 vs Rust f9dca47, tmpfs)
+
+Shared verification harness at `ec02deb`, `bin/benchmark --apps rust,go
+--rounds 3 --duration 8 --concurrencies 16 --cpus 8-11 --client-cpus 12-15`,
+both runtime databases on tmpfs, zero errors, contract-validated.
+
+**Important correction:** the first run of this measurement used Rust
+`743aa84`, which is the pre-response-cache baseline (its numbers match the old
+published table within 2-3%). The latest published Rust revision is `f9dca47`
+(image `a368be61…`, whole-response cache included); the table below is the
+matched comparison against it, and our local Rust image reproduces the
+published Rust figures within ~2-4% (published 106,494 / 102,697 / 120,294 /
+121,378 / 8,037).
+
+| Route | Rust `f9dca47` | Go train `34782d0` | Go/Rust |
+|---|---:|---:|---:|
+| room_show | 109,586 | 149,403 | 1.36× |
+| messages_page | 106,497 | 192,759 | 1.81× |
+| sidebar | 124,369 | 166,116 | 1.34× |
+| search | 125,870 | 197,400 | 1.57× |
+| post_message | 8,235 | 15,817 | 1.92× |
+
+Three consistent rounds per app (spread ≤3% for Rust, ≤2% for Go medians; two
+Go rounds carried one lower outlier on sidebar/search). Raw:
+`/tmp/opencode/matched-rust-go/summary.json`.
+
+The train `34782d0` = engine-v2 (DHH review fixes) + opt-loop + opt-cache +
+opt-front + opt-replay (with the keep-alive fix) + opt-cgo + opt-p2-cgo +
+opt-p1-write + opt-p3-checkpoint + opt-p4-notify + opt-runtime; full gate
+green (race suite, browser, 178/178 screen pixels+a11y, interop).
