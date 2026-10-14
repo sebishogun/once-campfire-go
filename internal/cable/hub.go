@@ -347,12 +347,14 @@ func unreadStreamName(user int64) string {
 // alone, so the unread bump must treat it as the same subscription.
 //
 // Canonical means exactly the spelling unreadStreamName produces. ParseInt
-// alone would also accept `+1`, `01` and `-1`, which are distinct stream names
+// alone would also accept `+1`, `01` and `-0`, which are distinct stream names
 // the generic publication never matches: indexing them under user 1 would
 // deliver that user's room bumps to a subscription the generic path excludes,
 // expanding the recipient set and breaking stream-identity parity. The
-// round-trip against the builder is the whole rule, so a name is indexed only
-// when it is the name the publication can produce.
+// round-trip against the builder is the whole rule — no positivity gate, since
+// the users table's integer primary key admits 0 and negative rowids and a
+// membership may reference them, so a target of 0 or -1 is as real a stream as
+// any other and must round-trip identically.
 func unreadStreamUser(stream string) (int64, bool) {
 	rest, ok := strings.CutPrefix(stream, "user_")
 	if !ok {
@@ -363,7 +365,7 @@ func unreadStreamUser(stream string) (int64, bool) {
 		return 0, false
 	}
 	user, err := strconv.ParseInt(rest, 10, 64)
-	if err != nil || user <= 0 || unreadStreamName(user) != stream {
+	if err != nil || unreadStreamName(user) != stream {
 		return 0, false
 	}
 	return user, true
@@ -1004,20 +1006,39 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 }
 
 // publishScratch is the per-publish working set: the wire-frame bytes, the
-// recipient snapshot and (for the unread bump) the recipient session tokens and
-// their target users. Pooled so a steady-state broadcast allocates nothing
-// beyond the frame itself (ENGINE-57): wrap holds the once-escaped frame JSON,
-// recips the recipients, tokens the tokens handed to the bulk authorization
-// query, targets the target users handed to the bulk membership recheck. A
-// pooled scratch is private to one publish — the frame cache clones whatever
-// bytes it retains (NewPreparedMessage copies, cache entries own their frames)
-// — so reuse is safe.
+// recipient snapshot and (for the unread bump) the recipient session tokens,
+// their target users and the membership recheck's result. Pooled so a
+// steady-state broadcast allocates nothing beyond the frame itself (ENGINE-57):
+// wrap holds the once-escaped frame JSON, recips the recipients, tokens the
+// tokens handed to the bulk authorization query, targets the target users
+// handed to the bulk membership recheck, fresh the recheck's result — sorted in
+// place and binary-searched per recipient, so the result costs log(targets)
+// comparisons each instead of a map build. A pooled scratch is private to one
+// publish — the frame cache clones whatever bytes it retains
+// (NewPreparedMessage copies, cache entries own their frames) — so reuse is
+// safe.
+//
+// Every newly created scratch pays one 512-byte backing array for fresh (64
+// int64) plus its slice header, on the first publication that needs it —
+// including a generic publication, since the pool hands out one kind of
+// scratch. Steady state reuses the object and allocates none of it.
 type publishScratch struct {
 	wrap    []byte
 	recips  []recipient
 	tokens  []string
 	targets []int64
 	fresh   []int64
+}
+
+// reset truncates every buffer for the next publication. The result buffers in
+// particular must be truncated, never merely appended to: a target left
+// eligible by an earlier publication would otherwise filter as eligible now.
+func (s *publishScratch) reset() {
+	s.wrap = s.wrap[:0]
+	s.recips = s.recips[:0]
+	s.tokens = s.tokens[:0]
+	s.targets = s.targets[:0]
+	s.fresh = s.fresh[:0]
 }
 
 var publishScratchPool = sync.Pool{
@@ -1270,6 +1291,9 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
+	scratch := publishScratchPool.Get().(*publishScratch)
+	scratch.reset()
+	defer publishScratchPool.Put(scratch)
 	members, err := h.db.RoomMemberIDs(ctx, room)
 	if err != nil {
 		return err
@@ -1277,16 +1301,6 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	if len(members) == 0 {
 		return nil
 	}
-	scratch := publishScratchPool.Get().(*publishScratch)
-	wrap := scratch.wrap[:0]
-	recipients := scratch.recips[:0]
-	tokens := scratch.tokens[:0]
-	targets := scratch.targets[:0]
-	fresh := scratch.fresh[:0]
-	defer func() {
-		scratch.wrap, scratch.recips, scratch.tokens, scratch.targets, scratch.fresh = wrap, recipients, tokens, targets, fresh
-		publishScratchPool.Put(scratch)
-	}()
 	h.mu.RLock()
 	scope := ""
 	for _, member := range members {
@@ -1297,35 +1311,70 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 		if scope == "" {
 			scope = roomScope(room)
 		}
-		targets = append(targets, member)
+		scratch.targets = append(scratch.targets, member)
 		for c, identifiers := range m {
 			// One token per client: a client's identifiers share its session.
-			tokens = append(tokens, c.token)
+			scratch.tokens = append(scratch.tokens, c.token)
 			for _, identifier := range identifiers {
-				recipients = append(recipients, recipient{client: c, identifier: identifier, room: room, scope: scope, target: member})
+				scratch.recips = append(scratch.recips, recipient{client: c, identifier: identifier, room: room, scope: scope, target: member})
 			}
 		}
 	}
 	h.mu.RUnlock()
-	if len(recipients) == 0 {
+	if len(scratch.recips) == 0 {
 		return nil
 	}
 	if unreadBumpAfterSnapshot != nil {
 		unreadBumpAfterSnapshot()
 	}
-	// Session validity first, so a revoked client is disconnected whatever its
-	// room eligibility is — the generic publish path's rule for any recipient
-	// it holds. One token per distinct session, however many tabs or
-	// identifiers a client holds: sorting in place keeps this allocation-free.
-	slices.Sort(tokens)
-	tokens = slices.Compact(tokens)
-	allowed, err := h.db.AuthorizedSessions(ctx, tokens, 0)
+	kept, err := h.unreadEligible(ctx, scratch, room)
 	if err != nil {
 		return err
 	}
-	kept := recipients[:0]
-	for i := range recipients {
-		r := &recipients[i]
+	if len(kept) == 0 {
+		return nil
+	}
+	scratch.wrap = h.fanout(kept, map[string]any{"roomId": room}, scratch.wrap)
+	return nil
+}
+
+// unreadEligible reduces the snapshot in scratch.recips to the recipients still
+// eligible for a publication to room, re-reading both facts and keeping their
+// outcomes apart:
+//
+//   - Session validity of each CLIENT's token, resolved first by one bulk query
+//     over the deduplicated scratch.tokens. A token with no live authorized
+//     session is a revoked, deleted or banned client, and its client is stopped
+//     exactly as the generic publish path stops an unauthorized recipient.
+//   - Membership of each subscription's TARGET user, re-read after the
+//     candidate snapshot through RoomMembersAmong. A member removed in the
+//     meantime — by the audited helpers or by a foreign writer on another
+//     SQLite connection — is skipped: no frame, no disconnect. The candidate
+//     read alone cannot answer this, because it happened earlier.
+//
+// It reuses the scratch's buffers rather than allocating: the session query
+// needs the deduplicated tokens, and the membership recheck appends into
+// scratch.fresh, which is truncated and refilled first so no target left
+// eligible by an earlier publication can be read as eligible now (the recheck
+// only ever drops recipients, so a stale entry is exactly an over-permissive
+// filter). The result is sorted in place and binary-searched per recipient:
+// log(targets) comparisons each, against one map build before, and the caller
+// owns the buffer. A failed read returns the error and delivers nothing.
+//
+// It is the second half of PublishUnreadBump, factored so the scratch's reuse —
+// in particular the result buffer's truncation — can be exercised directly.
+func (h *Hub) unreadEligible(ctx context.Context, scratch *publishScratch, room int64) ([]recipient, error) {
+	// One token per distinct session, however many tabs or identifiers a client
+	// holds: sorting in place keeps this allocation-free.
+	slices.Sort(scratch.tokens)
+	scratch.tokens = slices.Compact(scratch.tokens)
+	allowed, err := h.db.AuthorizedSessions(ctx, scratch.tokens, 0)
+	if err != nil {
+		return nil, err
+	}
+	kept := scratch.recips[:0]
+	for i := range scratch.recips {
+		r := &scratch.recips[i]
 		user, live := allowed[r.client.token]
 		if !live {
 			r.client.stop()
@@ -1334,32 +1383,27 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 		r.user = user
 		kept = append(kept, *r)
 	}
-	recipients = kept
-	if len(recipients) == 0 {
-		return nil
+	scratch.recips = kept
+	if len(scratch.recips) == 0 {
+		return nil, nil
 	}
 	// Membership eligibility, re-read now: a target removed from the room since
 	// the candidate read is skipped — no frame and no disconnect — because the
-	// candidate read happened earlier and cannot answer for the present. The
-	// recheck's result goes into the pooled scratch and is sorted in place, so
-	// it allocates no result container of its own.
-	fresh, err = h.db.RoomMembersAmong(ctx, fresh, room, targets)
+	// candidate read happened earlier and cannot answer for the present.
+	fresh, err := h.db.RoomMembersAmong(ctx, scratch.fresh[:0], room, scratch.targets)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	scratch.fresh = fresh
 	slices.Sort(fresh)
-	kept = recipients[:0]
-	for i := range recipients {
-		if _, ok := slices.BinarySearch(fresh, recipients[i].target); ok {
-			kept = append(kept, recipients[i])
+	kept = scratch.recips[:0]
+	for i := range scratch.recips {
+		if _, ok := slices.BinarySearch(fresh, scratch.recips[i].target); ok {
+			kept = append(kept, scratch.recips[i])
 		}
 	}
-	recipients = kept
-	if len(recipients) == 0 {
-		return nil
-	}
-	wrap = h.fanout(recipients, map[string]any{"roomId": room}, wrap)
-	return nil
+	scratch.recips = kept
+	return kept, nil
 }
 
 func (h *Hub) subscription(ctx context.Context, c *client, identifier string) (subscription, bool) {

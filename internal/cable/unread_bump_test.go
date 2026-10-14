@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -558,6 +559,171 @@ func TestUnreadBumpNoncanonicalAliasParity(t *testing.T) {
 	expectSilent(t, canonicalAlias)
 	expectSilent(t, zeroAlias)
 	expectNone(t, both)
+}
+
+// TestUnreadBumpZeroAndNegativeTargetParity pins that the identity rule is the
+// exact stream name and nothing else. The users table's integer primary key
+// admits 0 and negative rowids, and a membership may reference them, so
+// `user_0_unreads` and `user_-1_unreads` are real streams: a positive-ID client
+// holding a signed alias for one must be a recipient exactly when the generic
+// publication to that name is. The noncanonical spellings of the same targets
+// (`user_+0_unreads`, `user_-0_unreads`) stay excluded, as `+1` and `01` do in
+// TestUnreadBumpNoncanonicalAliasParity.
+func TestUnreadBumpZeroAndNegativeTargetParity(t *testing.T) {
+	hub, db, owner, _, secrets := hubFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	targets := []int64{0, -1}
+	for _, id := range targets {
+		if _, err := db.Write.ExecContext(ctx,
+			"INSERT INTO users(id,name,role,status,created_at,updated_at) VALUES(?,?,0,0,'now','now')",
+			id, fmt.Sprintf("Target%d", id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closed, err := db.CreateRoom(ctx, owner.ID, "Rooms::Closed", "Edge", []int64{owner.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range targets {
+		if _, err := db.Write.ExecContext(ctx,
+			"INSERT INTO memberships(room_id,user_id,involvement,created_at,updated_at) VALUES(?,?,'everything','now','now')",
+			closed.ID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	members, err := db.RoomMemberIDs(ctx, closed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range targets {
+		if !slices.Contains(members, id) {
+			t.Fatalf("membership for target %d was not stored: %v", id, members)
+		}
+	}
+	// The subscriber is a positive-ID user; only the stream name names the
+	// target.
+	zeroAlias, zeroIDs := aliasUnreadSubscriber(t, hub, db, secrets, owner, unreadStreamName(0))
+	negAlias, negIDs := aliasUnreadSubscriber(t, hub, db, secrets, owner, unreadStreamName(-1))
+	plusZero, plusZeroIDs := aliasUnreadSubscriber(t, hub, db, secrets, owner, "user_+0_unreads")
+	negZero, negZeroIDs := aliasUnreadSubscriber(t, hub, db, secrets, owner, "user_-0_unreads")
+	payload := map[string]any{"roomId": closed.ID}
+
+	// 1. The bump reaches the canonical spellings, whose targets are members.
+	if err := hub.PublishUnreadBump(closed.ID, unreadBudget); err != nil {
+		t.Fatal(err)
+	}
+	expectBumpFor(t, ctx, zeroAlias, zeroIDs[0], closed.ID)
+	expectBumpFor(t, ctx, negAlias, negIDs[0], closed.ID)
+	expectSilent(t, plusZero)
+	expectSilent(t, negZero)
+
+	// 2. Generic parity, name for name.
+	for _, c := range []struct {
+		stream string
+		client *client
+		id     string
+	}{
+		{unreadStreamName(0), zeroAlias, zeroIDs[0]},
+		{unreadStreamName(-1), negAlias, negIDs[0]},
+		{"user_+0_unreads", plusZero, plusZeroIDs[0]},
+		{"user_-0_unreads", negZero, negZeroIDs[0]},
+	} {
+		hub.PublishStream(ctx, c.stream, payload)
+		expectBumpFor(t, ctx, c.client, c.id, closed.ID)
+		expectSilent(t, plusZero)
+		expectSilent(t, negZero)
+		expectSilent(t, zeroAlias)
+		expectSilent(t, negAlias)
+	}
+}
+
+// TestUnreadBumpEligibilityScratchPoisoning pins the pooled result buffer's
+// reuse. The membership recheck appends into scratch.fresh, so a target left
+// eligible by an earlier publication must not survive into a later one: the
+// test drives the resolution directly with ONE scratch the test owns, which is
+// deterministic and does not depend on sync.Pool handing back the same object.
+func TestUnreadBumpEligibilityScratchPoisoning(t *testing.T) {
+	hub, db, owner, _, _ := hubFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	first, err := db.CreateUser(ctx, "First", "first@test", "digest", "", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.CreateUser(ctx, "Second", "second@test", "digest", "", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := db.CreateRoom(ctx, owner.ID, "Rooms::Closed", "Pair", []int64{owner.ID, first.ID, second.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstC, firstToken := unreadSubscriber(t, hub, db, first)
+	secondC, secondToken := unreadSubscriber(t, hub, db, second)
+	scope := roomScope(closed.ID)
+	scratch := &publishScratch{
+		recips: []recipient{
+			{client: firstC, identifier: unreadIdentifier, room: closed.ID, scope: scope, target: first.ID},
+			{client: secondC, identifier: unreadIdentifier, room: closed.ID, scope: scope, target: second.ID},
+		},
+		tokens:  []string{firstToken, secondToken},
+		targets: []int64{first.ID, second.ID},
+		// Poison: an earlier publication left BOTH targets eligible here.
+		fresh: []int64{first.ID, second.ID},
+	}
+
+	// Both members eligible: the buffer is refilled with both.
+	kept, err := hub.unreadEligible(ctx, scratch, closed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 2 {
+		t.Fatalf("eligible recipients = %d, want 2", len(kept))
+	}
+	if len(scratch.fresh) != 2 {
+		t.Fatalf("result buffer = %v, want both targets", scratch.fresh)
+	}
+
+	// One membership removed and only that member a candidate: the smaller
+	// result must be exactly the survivor, not the poisoned pair.
+	removeMembership(t, db, closed, second.ID, false)
+	scratch.recips = scratch.recips[:1]
+	scratch.tokens = scratch.tokens[:1]
+	scratch.targets = scratch.targets[:1]
+	scratch.fresh = scratch.fresh[:0]
+	scratch.recips[0].client = secondC
+	scratch.recips[0].target = second.ID
+	scratch.tokens[0] = secondToken
+	scratch.targets[0] = second.ID
+	kept, err = hub.unreadEligible(ctx, scratch, closed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 0 || len(scratch.fresh) != 0 {
+		t.Fatalf("removed target survived the recheck: kept=%v fresh=%v", kept, scratch.fresh)
+	}
+	expectSilent(t, secondC)
+
+	// The survivor is still eligible, and its frame is the only one delivered.
+	scratch.recips = scratch.recips[:1]
+	scratch.tokens = scratch.tokens[:1]
+	scratch.targets = scratch.targets[:1]
+	scratch.recips[0].client = firstC
+	scratch.recips[0].target = first.ID
+	scratch.tokens[0] = firstToken
+	scratch.targets[0] = first.ID
+	kept, err = hub.unreadEligible(ctx, scratch, closed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || kept[0].target != first.ID {
+		t.Fatalf("eligible recipients = %v, want only target %d", kept, first.ID)
+	}
+	scratch.wrap = hub.fanout(kept, map[string]any{"roomId": closed.ID}, scratch.wrap[:0])
+	expectBump(t, ctx, firstC, closed.ID)
+	expectNone(t, firstC)
+	expectSilent(t, secondC)
 }
 
 // TestUnreadBumpSignedAliasSocketLifecycle drives a signed alias through the

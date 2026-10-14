@@ -10,6 +10,7 @@ package cable
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,16 +21,20 @@ import (
 
 // oldUnreadFanout is the pre-Lever-5 shape of the unread bump, kept for the
 // benchmark A/B: read every room member, then one stream publish per member
-// (each publish snapshots that member's stream, authorizes and sends).
-func oldUnreadFanout(hub *Hub, ctx context.Context, room int64) {
+// (each publish snapshots that member's stream, authorizes and sends). It
+// iterates ROOM MEMBERS, not the server's unread subscribers, so it is
+// unrelated-subscriber-independent too; the error is returned so a benchmark
+// cannot silently measure a failed member read.
+func oldUnreadFanout(hub *Hub, ctx context.Context, room int64) error {
 	members, err := hub.db.RoomMemberIDs(ctx, room)
 	if err != nil {
-		return
+		return err
 	}
 	payload := map[string]any{"roomId": room}
 	for _, id := range members {
 		hub.PublishStream(ctx, fmt.Sprintf("user_%d_unreads", id), payload)
 	}
+	return nil
 }
 
 // BenchmarkUnreadBumpFanout compares the Lever-5 bump (a room-member read, one
@@ -62,15 +67,21 @@ func BenchmarkUnreadBumpFanout(b *testing.B) {
 			}
 			// Warm the frame and authorization paths so the measurement is
 			// steady state.
-			hub.PublishUnreadBump(roomID, unreadBudget)
-			oldUnreadFanout(hub, ctx, roomID)
+			if err := hub.PublishUnreadBump(roomID, unreadBudget); err != nil {
+				b.Fatal(err)
+			}
+			if err := oldUnreadFanout(hub, ctx, roomID); err != nil {
+				b.Fatal(err)
+			}
 			drain()
 			b.Run("bump", func(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					drain()
-					hub.PublishUnreadBump(roomID, unreadBudget)
+					if err := hub.PublishUnreadBump(roomID, unreadBudget); err != nil {
+						b.Fatal(err)
+					}
 				}
 			})
 			b.Run("member-fanout", func(b *testing.B) {
@@ -78,7 +89,9 @@ func BenchmarkUnreadBumpFanout(b *testing.B) {
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					drain()
-					oldUnreadFanout(hub, ctx, roomID)
+					if err := oldUnreadFanout(hub, ctx, roomID); err != nil {
+						b.Fatal(err)
+					}
 				}
 			})
 		})
@@ -131,12 +144,13 @@ func BenchmarkUnreadBumpUnrelatedSubscribers(b *testing.B) {
 }
 
 // BenchmarkUnreadBumpFanoutAB is the alternating-order A/B for the same room:
-// the bump and the shape it replaced run back to back inside one loop, so a
-// drifting machine moves both and the pair stays comparable — the fixed
-// bump-then-member-fanout order of BenchmarkUnreadBumpFanout cannot show that.
-// Both means are reported as metrics (ns/op-bump, ns/op-member-fanout);
-// allocations are pinned by the per-shape benchmarks, which are deterministic
-// and order-independent.
+// both shapes run inside one loop, which shape runs first flips every
+// iteration, and the recipient queues are drained before each measured
+// operation so neither shape ever meets the other's frames. Each shape's
+// per-iteration times are reported as minimum, median, mean and spread
+// (max-min) rather than as one ns/op for the pair, which would hide exactly the
+// drift the alternation exists to expose. Run with -benchtime=1000x -count=6
+// for six independent samples of those metrics.
 func BenchmarkUnreadBumpFanoutAB(b *testing.B) {
 	for _, subs := range []int{1, 100} {
 		b.Run("subs="+strconv.Itoa(subs), func(b *testing.B) {
@@ -160,26 +174,58 @@ func BenchmarkUnreadBumpFanoutAB(b *testing.B) {
 					c.q.clear()
 				}
 			}
-			hub.PublishUnreadBump(roomID, unreadBudget)
-			oldUnreadFanout(hub, ctx, roomID)
+			bump := func() error { return hub.PublishUnreadBump(roomID, unreadBudget) }
+			fanout := func() error { return oldUnreadFanout(hub, ctx, roomID) }
+			if err := bump(); err != nil {
+				b.Fatal(err)
+			}
+			if err := fanout(); err != nil {
+				b.Fatal(err)
+			}
 			drain()
-			b.ResetTimer()
-			var bumpNanos, fanoutNanos int64
-			for i := 0; i < b.N; i++ {
+			measure := func(run func() error) int64 {
 				drain()
 				start := time.Now()
-				hub.PublishUnreadBump(roomID, unreadBudget)
-				mid := time.Now()
-				oldUnreadFanout(hub, ctx, roomID)
-				end := time.Now()
-				bumpNanos += mid.Sub(start).Nanoseconds()
-				fanoutNanos += end.Sub(mid).Nanoseconds()
+				if err := run(); err != nil {
+					b.Fatal(err)
+				}
+				return time.Since(start).Nanoseconds()
+			}
+			bumpSamples := make([]int64, 0, b.N)
+			fanoutSamples := make([]int64, 0, b.N)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if i%2 == 0 {
+					bumpSamples = append(bumpSamples, measure(bump))
+					fanoutSamples = append(fanoutSamples, measure(fanout))
+				} else {
+					fanoutSamples = append(fanoutSamples, measure(fanout))
+					bumpSamples = append(bumpSamples, measure(bump))
+				}
 			}
 			b.StopTimer()
-			b.ReportMetric(float64(bumpNanos)/float64(b.N), "ns/op-bump")
-			b.ReportMetric(float64(fanoutNanos)/float64(b.N), "ns/op-member-fanout")
+			reportSamples(b, "ns/op-bump", bumpSamples)
+			reportSamples(b, "ns/op-member-fanout", fanoutSamples)
 		})
 	}
+}
+
+// reportSamples reports one shape's sample distribution: minimum, median, mean
+// and spread (max-min), the minimum being the least contaminated by the host.
+func reportSamples(b *testing.B, name string, samples []int64) {
+	b.Helper()
+	if len(samples) == 0 {
+		return
+	}
+	slices.Sort(samples)
+	var total int64
+	for _, sample := range samples {
+		total += sample
+	}
+	b.ReportMetric(float64(samples[0]), name+"-min")
+	b.ReportMetric(float64(samples[len(samples)/2]), name+"-median")
+	b.ReportMetric(float64(total)/float64(len(samples)), name+"-mean")
+	b.ReportMetric(float64(samples[len(samples)-1]-samples[0]), name+"-spread")
 }
 
 // BenchmarkUnreadEligibilityReads isolates the two eligibility reads the bump
