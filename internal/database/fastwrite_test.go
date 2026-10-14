@@ -448,7 +448,7 @@ func TestFastWriteStatementStream(t *testing.T) {
 	}
 	recorded = nil // drop the seeding statements; keep only the posts
 
-	// In-line plain post: the eight create statements plus the transaction
+	// In-line plain post: the six create statements plus the transaction
 	// control, in the create transaction's order.
 	reset()
 	if _, err := d.CreateMessage(ctx, owner.ID, room.ID, "stream-1", "<p>one</p>", "one"); err != nil {
@@ -456,8 +456,7 @@ func TestFastWriteStatementStream(t *testing.T) {
 	}
 	want := []string{
 		"BEGIN IMMEDIATE",
-		stmtMembershipCount,
-		stmtCreatorName,
+		stmtAuthorizedCreatorName,
 		stmtInsertMessage,
 		stmtTouchRoom,
 		stmtInsertRichText,
@@ -477,8 +476,7 @@ func TestFastWriteStatementStream(t *testing.T) {
 	}
 	want = []string{
 		"BEGIN IMMEDIATE",
-		stmtMembershipCount,
-		stmtCreatorName,
+		stmtAuthorizedCreatorName,
 		stmtInsertMessage,
 		stmtTouchRoom,
 		stmtInsertRichText,
@@ -491,8 +489,8 @@ func TestFastWriteStatementStream(t *testing.T) {
 		t.Fatalf("attachment stream = %v\nwant %v", got, want)
 	}
 
-	// The queued path: one post queues behind a blocker, so the caller's
-	// after-commit pair runs in a transaction of its own after the shared
+	// The queued path: one post queues behind a blocker, so the writer's
+	// after phase runs the pair in a transaction of its own after the shared
 	// commit. A single-job batch runs directly in the transaction — no
 	// savepoint — which is the lane's documented shape; the SAVEPOINT w /
 	// ROLLBACK TO w / RELEASE w statements of a multi-job batch are pinned
@@ -541,8 +539,7 @@ func TestFastWriteStatementStream(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	job := []string{
-		stmtMembershipCount,
-		stmtCreatorName,
+		stmtAuthorizedCreatorName,
 		stmtInsertMessage,
 		stmtTouchRoom,
 		stmtInsertRichText,

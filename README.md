@@ -144,10 +144,15 @@ quarter of the budget is not cached).
 `CAMPFIRE_WRITE_QUEUE` (default `on`; also accepts `true`/`1` and `off`/`false`/`0`, warning on
 anything else) routes message creation through a single writer goroutine that commits everything
 queued at a drain in one `BEGIN IMMEDIATE` transaction (group commit), each job in its own savepoint
-so a failing job rolls back exactly its own statements while the batch commits. Each request learns
-its message only after the shared commit — the response is never sent ahead of persistence — and
-then runs the search-index insert and unread bump itself, after the commit, the way the Rust port's
-`after_commit` hooks shape the same Rails callbacks. The writer connection disables SQLite's
+so a failing job rolls back exactly its own statements while the batch commits. The writer then runs
+a second phase of its own: the search-index insert and unread bump for the batch, in bounded
+transactions (at most 256 jobs each, each job in its own savepoint when the transaction holds more
+than one), so a batch of B messages costs one primary commit plus the second phase's commits — two
+when the batch fits one after transaction — instead of one after transaction per request. Each
+request learns its message only after both phases — the response is never sent ahead of persistence
+— and an after-phase failure is reported to the caller that owns the failed job while the message
+row stays, the way the Rust port's `after_commit` hooks shape the same Rails callbacks. The writer
+connection disables SQLite's
 auto-checkpoint (`PRAGMA wal_autocheckpoint=0`) and a separate connection runs
 `PRAGMA wal_checkpoint(PASSIVE)` every `CAMPFIRE_CHECKPOINT_MS` milliseconds (default 1000), so no
 write ever waits for the checkpoint's WAL and database fsyncs. Durability does not move: the
@@ -160,23 +165,23 @@ request that disconnects after its job started still persists (the job's context
 before execution). Setting `off` restores the per-request transaction path with the message, index
 and unread bump in one rollback-atomic transaction and the writer's auto-checkpoint, byte-for-byte
 the pre-lane behaviour; the checksum of the response bytes is covered by the write-lane parity
-tests. The sidebar and search-cache version counters move with the shared commit on both paths
-(group-commit and per-request), so the write lane never serves a version-keyed cache that hides a
-committed message.
+tests. The sidebar and search-cache version counters move after the write's commits on both paths
+(group commit plus its after phase, and per-request), so the write lane never serves a version-keyed
+cache that hides a committed message or its index row.
 `CAMPFIRE_FASTDB_WRITE` (default `on`; accepts the same value shapes and warning policy as
 `CAMPFIRE_WRITE_QUEUE`) runs the message create transaction as direct prepared statements on one
 serialized fastdb connection (`internal/fastdb/write` over `internal/fastdb/csqlite`) instead of
-`database/sql`: the same eight statements — membership check, creator name, message insert, room
-touch, rich-text body, attachment, then the search-index insert and unread bump in
-after-commit order — bound positionally (int64/text/null), prepared once and reused across jobs,
-with the same `BEGIN IMMEDIATE`, savepoint-per-job, single-commit-per-batch and
-after-commit-tx-of-its-own shapes the `database/sql` lane has. The pragma set is identical
+`database/sql`: the same six statements — the authorized creator lookup (membership check and name
+in one statement), message insert, room touch, rich-text body, attachment, then the search-index
+insert and unread bump in after-commit order — bound positionally (int64/text/null), prepared once
+and reused across jobs, with the same `BEGIN IMMEDIATE`, savepoint-per-job, single-commit-per-batch
+and writer-owned bounded-after-phase shapes the `database/sql` lane has. The pragma set is identical
 (`busy_timeout=5000`, `foreign_keys=on`, WAL, `synchronous=NORMAL`, `cache_size=2000`,
 `wal_autocheckpoint=0` with the off-writer PASSIVE checkpointer unchanged), and the error
 mapping matches (`errors.Is` against the same sentinels: `sql.ErrNoRows`, the csqlite
 constraint/busy codes; only the error text formatting differs). The statement-count tests pin
-the per-post text/order/count on both lanes: 12 counted statements with the flag off, 5 with it
-on (the create transaction's seven statements leave the counted driver), and the direct lane's
+the per-post text/order/count on both lanes: 11 counted statements with the flag off, 5 with it
+on (the create transaction's six statements leave the counted driver), and the direct lane's
 recorded stream is pinned by text and order in `internal/database/fastwrite_test.go`. The
 twin-database differential test drives identical create workloads (plain, attachment, staged
 upload, webhook, queued, and the forbidden/no-creator/FK failure cases) through both lanes and
