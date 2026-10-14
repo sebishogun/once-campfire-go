@@ -44,12 +44,19 @@ type conn struct {
 	// busy is true while a request is being served; Shutdown closes only
 	// connections that are not busy (idle between requests).
 	busy atomic.Bool
-	// readArmed/writeArmed mirror the socket's deadline state in userspace,
-	// so a deadline call that would set the state it already has is skipped
-	// (the C port's shape: deadlines are bookkeeping, and only a change
-	// reaches the poller). Every deadline touch on this connection goes
-	// through setReadDeadline/setWriteDeadline, and the socket is owned by
+	// readArmed/writeArmed mirror the socket's deadline state in userspace, so
+	// a deadline call that would leave the socket exactly as it is is skipped
+	// (the C port's shape: a per-connection deadline record, and only a change
+	// reaches the runtime poller). Every deadline touch on this connection
+	// goes through setReadDeadline/setWriteDeadline, and the socket is owned by
 	// this loop until it is handed off, so the mirror cannot go stale.
+	//
+	// Precondition: the connection arrives with no deadline armed, so the
+	// mirror starts false. Server.Serve accepts from the bare net.Listener it
+	// was given (net/http's accept path arms no deadline either), and a
+	// wrapper listener that pre-arms one — a handshake-timeout wrapper around
+	// Accept, say — must clear it before handing the conn over, or the first
+	// clear here is skipped as redundant and the stale deadline survives.
 	readArmed  bool
 	writeArmed bool
 
@@ -94,6 +101,9 @@ func (p *prefixReader) Read(dst []byte) (int, error) {
 }
 
 func newConn(s *Server, rwc net.Conn) *conn {
+	// The deadline mirror (readArmed/writeArmed) starts cleared, which is the
+	// state of every connection Serve accepts from a bare listener; see the
+	// field comment for the precondition a wrapped listener must meet.
 	c := &conn{srv: s, rwc: rwc}
 	c.pr.rwc = rwc
 	c.br = bufio.NewReaderSize(&c.pr, 4096)
@@ -106,22 +116,22 @@ func newConn(s *Server, rwc net.Conn) *conn {
 }
 
 // setReadDeadline arms the socket read deadline at t, or clears it when t is
-// zero. A zero t against an already-cleared deadline is the no-op net/http
-// pays for on every request (readRequest's SetReadDeadline(zero) when the
-// header timeout is unset, the idle clear, and the post-Peek clear); a
-// non-zero t is always applied, because the absolute instant moves with every
-// request. Skipping the redundant clear changes nothing a client can observe:
-// clearing a deadline that is already unset leaves the socket unset.
+// zero, and records the state the socket is left in. A zero t against an
+// already-cleared deadline is skipped: net/http's readRequest and conn.serve
+// re-clear already-clear deadlines on every request, this loop inherited that
+// call shape, and the mirror removes the repeated deadline call (and the
+// runtime-poller work behind it) without changing what the socket holds —
+// clearing a deadline that is already unset leaves it unset. A non-zero t is
+// always applied, because the absolute instant moves with every request. The
+// mirror moves only when the setter succeeds, so a failed call leaves it
+// still matching the socket.
 func (c *conn) setReadDeadline(t time.Time) {
-	if t.IsZero() {
-		if !c.readArmed {
-			return
-		}
-		c.readArmed = false
-	} else {
-		c.readArmed = true
+	if t.IsZero() && !c.readArmed {
+		return
 	}
-	c.rwc.SetReadDeadline(t)
+	if c.rwc.SetReadDeadline(t) == nil {
+		c.readArmed = !t.IsZero()
+	}
 }
 
 // setWriteDeadline is setReadDeadline for the write side. net/http clears the
@@ -131,15 +141,12 @@ func (c *conn) setReadDeadline(t time.Time) {
 // outlive the response it bounded: reject() writes the 400/431 tail before the
 // next request arms its own deadline).
 func (c *conn) setWriteDeadline(t time.Time) {
-	if t.IsZero() {
-		if !c.writeArmed {
-			return
-		}
-		c.writeArmed = false
-	} else {
-		c.writeArmed = true
+	if t.IsZero() && !c.writeArmed {
+		return
 	}
-	c.rwc.SetWriteDeadline(t)
+	if c.rwc.SetWriteDeadline(t) == nil {
+		c.writeArmed = !t.IsZero()
+	}
 }
 
 // serve runs the keep-alive request loop for one connection.

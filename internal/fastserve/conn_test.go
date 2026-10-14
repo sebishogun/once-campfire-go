@@ -516,17 +516,26 @@ func deadlineBudget(t *testing.T, tune func(*Server), n int) (int32, int32) {
 			t.Fatalf("response %d: %q", i, got)
 		}
 	}
-	reads, writes := cc.reads.Load(), cc.writes.Load()
-	cli.Close() // unblocks the serve loop's wait for the next request
-	s.wg.Wait() // and the loop is done touching deadlines
+	var reads, writes int32
+	// Receiving the last response does not synchronize with the server's own
+	// trailing deadline calls (the post-finish write clear and the idle re-arm
+	// before it blocks on the next request), so sample only once the client is
+	// closed and the serve goroutine has exited: every deadline call happens
+	// before the loop's final Peek, and connDone (wg.Done) runs after it.
+	cli.Close()
+	s.wg.Wait()
+	reads, writes = cc.reads.Load(), cc.writes.Load()
 	return reads, writes
 }
 
-// TestDeadlineCallBudget pins the per-request deadline traffic against the
-// userspace mirror: net/http re-clears already-clear deadlines five times per
-// keep-alive request (readRequest's header clear, its whole-request clear, the
-// post-Peek clear, and conn.serve's two write clears), and only the sets that
-// actually change the socket reach it here.
+// TestDeadlineCallBudget pins the loop's deadline calls against the userspace
+// mirror. The loop mirrors net/http's call shape, which re-clears
+// already-clear deadlines five times per keep-alive request (readRequest's
+// header clear, its whole-request clear, the post-Peek clear, and
+// conn.serve's two write clears); only the calls that would change what the
+// socket holds reach it now. The counter instruments net.Conn deadline calls,
+// not kernel syscalls: Go's setDeadlineImpl hands each one to the runtime
+// poller (runtime_pollSetDeadline) rather than issuing a syscall per call.
 func TestDeadlineCallBudget(t *testing.T) {
 	// Every timeout zero (New()'s zero value, and the benchmark's server):
 	// the socket's deadlines are cleared from the fd's first instant, so a
