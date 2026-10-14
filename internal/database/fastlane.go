@@ -45,29 +45,29 @@ type fastLaneTx struct {
 	tx *write.WriteTx
 }
 
-func (t *fastLaneTx) MembershipCount(ctx context.Context, room, user int64) (int64, error) {
+func (t *fastLaneTx) AuthorizedCreatorName(ctx context.Context, room, user int64) (string, error) {
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return "", err
 	}
-	s, err := t.tx.Stmt(stmtMembershipCount)
+	s, err := t.tx.Stmt(stmtAuthorizedCreatorName)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer s.Reset()
 	if err := s.BindInt64(1, room); err != nil {
-		return 0, err
+		return "", err
 	}
 	if err := s.BindInt64(2, user); err != nil {
-		return 0, err
+		return "", err
 	}
 	row, err := s.Step()
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	if !row {
-		return 0, write.ErrNoRows
+		return "", ErrForbidden
 	}
-	return s.Int64(0)
+	return s.Text(0)
 }
 
 func (t *fastLaneTx) CreatorName(ctx context.Context, user int64) (string, error) {

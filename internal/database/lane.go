@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 )
 
 // The write lane's statement surface (ENGINE-55): the message create
@@ -12,13 +13,16 @@ import (
 // both lanes execute these exact texts, and the statement-count tests pin
 // the per-post order and count on both.
 const (
-	// The create transaction, in execution order: the membership check, the
-	// creator name, the message row, the room touch, the rich-text body and
-	// the attachment (when present), then the after-commit pair — search
-	// index row first, unread bump second — inside the job's transaction on
-	// the direct and in-line paths, in a transaction of its own on the
-	// queued path (ENGINE-45 batching).
-	stmtMembershipCount   = "SELECT count(*) FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.room_id=? AND m.user_id=? AND u.status=0"
+	// The create transaction, in execution order: the authorized creator
+	// lookup (the membership check and the name lookup in one statement), the
+	// message row, the room touch, the rich-text body and the attachment
+	// (when present), then the after-commit pair — search index row first,
+	// unread bump second — inside the job's transaction on the direct and
+	// in-line paths, in a writer-owned transaction of its own on the queued
+	// path (ENGINE-45 batching).
+	stmtAuthorizedCreatorName = "SELECT u.name FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.room_id=? AND m.user_id=? AND u.status=0"
+	// stmtCreatorName is the webhook path's lookup: it skips the membership
+	// check, so a missing or inactive user is no-rows rather than forbidden.
 	stmtCreatorName       = "SELECT name FROM users WHERE id=?"
 	stmtInsertMessage     = "INSERT INTO messages(client_message_id,creator_id,room_id,created_at,updated_at) VALUES (?,?,?,?,?)"
 	stmtTouchRoom         = "UPDATE rooms SET updated_at=? WHERE id=?"
@@ -42,9 +46,14 @@ type UploadTx interface {
 // staged-blob surface for message uploads.
 type jobTx interface {
 	UploadTx
-	// MembershipCount binds (?=room_id, ?=user_id).
-	MembershipCount(ctx context.Context, room, user int64) (int64, error)
-	// CreatorName binds (?=id).
+	// AuthorizedCreatorName binds (?=room_id, ?=user_id) and returns the
+	// creator's name only when the user is active and a member of the room.
+	// No matching row is ErrForbidden: the membership check and the name
+	// lookup are one statement, so a missing, inactive or non-member user is
+	// indistinguishable from the two-read version's ErrForbidden.
+	AuthorizedCreatorName(ctx context.Context, room, user int64) (string, error)
+	// CreatorName binds (?=id) and returns the name without a membership
+	// check (the webhook path). A missing or inactive user is sql.ErrNoRows.
 	CreatorName(ctx context.Context, user int64) (string, error)
 	// InsertMessage binds (?=client_message_id, ?=creator_id, ?=room_id,
 	// ?=created_at, ?=updated_at) and returns the new row id.
@@ -112,10 +121,13 @@ type sqlLaneTx struct {
 	tx *sql.Tx
 }
 
-func (t *sqlLaneTx) MembershipCount(ctx context.Context, room, user int64) (int64, error) {
-	var n int64
-	err := t.tx.QueryRowContext(ctx, stmtMembershipCount, room, user).Scan(&n)
-	return n, err
+func (t *sqlLaneTx) AuthorizedCreatorName(ctx context.Context, room, user int64) (string, error) {
+	var name string
+	err := t.tx.QueryRowContext(ctx, stmtAuthorizedCreatorName, room, user).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrForbidden
+	}
+	return name, err
 }
 
 func (t *sqlLaneTx) CreatorName(ctx context.Context, user int64) (string, error) {

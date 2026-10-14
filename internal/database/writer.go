@@ -20,6 +20,21 @@ var ErrWriterClosed = errors.New("database: writer queue closed")
 // (Rust's own write queue is bounded the same way).
 const writeQueueCapacity = 1024
 
+// afterBatchLimit bounds one after-phase transaction: at most this many jobs'
+// after-commit pairs (search row + unread bump) share a commit. It caps the
+// statements and WAL frames a single after transaction writes and the time
+// the writer holds the lane for one chunk, while keeping a burst's commit
+// count near two: a full queue-capacity batch (writeQueueCapacity jobs) needs
+// four after transactions, and any batch at or below this bound needs one.
+// Larger batches split into several after transactions.
+const afterBatchLimit = 256
+
+// writerBatchObserver, when non-nil, is captured by newMessageWriter and
+// called with each primary batch's size and its after-phase transaction
+// count. It is a test hook, set before Open (like fastWriteRecord), for the
+// batch-size histogram and the commits-per-message contract.
+var writerBatchObserver func(primary, afterCommits int)
+
 // messageWriter serializes message creation onto the one write connection.
 //
 // The lane is adaptive (ENGINE-45): a job submitted while the queue is empty
@@ -36,12 +51,16 @@ const writeQueueCapacity = 1024
 // On the queued path each job runs inside its own savepoint, so a job that
 // fails rolls back exactly its own statements while the rest of the batch
 // still commits; the commit itself is one per batch. After the shared commit
-// the requesting goroutine runs the job's after-commit work (search index,
-// unread bump) in one transaction of its own — the same statements the Rust
-// port runs in its after_commit hooks. The in-line path folds that work into
-// the job's own transaction, so a lone post commits atomically; its
-// after-commit-failure behaviour is the direct path's (the write rolls back
-// with the failing statement), not the queued path's.
+// the writer runs a second phase of its own: the jobs' after-commit work
+// (search index, unread bump) in bounded transactions, each job inside its
+// own savepoint when the transaction holds more than one, so one failed
+// after-job rolls back only its own statements while the rest commit. A batch
+// of B messages therefore costs the primary commit plus the after phase's
+// transactions — two when the batch fits one after transaction — instead of
+// the B+1 commits the per-caller shape paid. The in-line path folds the
+// after work into the job's own transaction, so a lone post commits
+// atomically; its after-commit-failure behaviour is the direct path's (the
+// write rolls back with the failing statement), not the queued path's.
 //
 // A writer is not safe for direct use; all jobs go through submit, and Close
 // must be called before the underlying connection closes.
@@ -52,6 +71,10 @@ type messageWriter struct {
 	stop chan struct{}
 	done chan struct{}
 	once sync.Once
+	// observe, when non-nil (tests), receives each primary batch's size and
+	// the number of after-phase transactions it needed. It is captured at
+	// construction from writerBatchObserver, so a test sets that before Open.
+	observe func(primary, afterCommits int)
 	// mu guards closed, inflight and busy. closed rejects submissions after
 	// Close; inflight counts submissions that passed the closed check and
 	// are still between their mutex unlock and the channel send, so Close's
@@ -74,18 +97,22 @@ type messageJob struct {
 type messageResult struct {
 	message Message
 	err     error
-	// inline marks an in-line execution, whose after-commit work ran inside
-	// the job's own transaction; the caller must not replay it.
-	inline bool
+	// afterErr is the queued path's after-commit failure: the primary commit
+	// landed and the message is durable, but its search row / unread bump did
+	// not. The caller reports it the way Rails raises from the save that
+	// committed — the message stays. It is always nil on the direct and
+	// in-line paths, whose after work commits with the row.
+	afterErr error
 }
 
 func newMessageWriter(conn laneConn) *messageWriter {
 	w := &messageWriter{
-		conn: conn,
-		jobs: make(chan *messageJob, writeQueueCapacity),
-		wake: make(chan struct{}, 1),
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
+		conn:    conn,
+		jobs:    make(chan *messageJob, writeQueueCapacity),
+		wake:    make(chan struct{}, 1),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+		observe: writerBatchObserver,
 	}
 	go w.loop()
 	return w
@@ -259,7 +286,7 @@ func (w *messageWriter) runInline(job *messageJob) {
 			result = messageResult{err: err}
 			return
 		}
-		result = messageResult{message: m, inline: true}
+		result = messageResult{message: m}
 	}()
 	job.done <- result
 }
@@ -287,12 +314,13 @@ func (w *messageWriter) drain() {
 }
 
 // runBatch commits the head job and everything queued behind it in one
-// transaction. Results are delivered only after the commit, so a caller's
-// response can never precede its message's persistence. A single-job batch
-// runs directly in the transaction (a failure rolls back exactly its own
-// statements, which is all there is); larger batches run each job inside its
-// own savepoint, so one failing job rolls back only its own statements while
-// the rest of the batch still commits.
+// transaction, then runs the batch's after-commit work in the writer-owned
+// second phase. Results are delivered only after both phases, so a caller's
+// response can never precede its message's persistence or its after-commit
+// work. A single-job batch runs directly in the transaction (a failure rolls
+// back exactly its own statements, which is all there is); larger batches run
+// each job inside its own savepoint, so one failing job rolls back only its
+// own statements while the rest of the batch still commits.
 func (w *messageWriter) runBatch(head *messageJob) {
 	batch := []*messageJob{head}
 	for {
@@ -370,6 +398,21 @@ run:
 			commitErr = err
 		}
 	}()
+	// The second phase runs only when the primary commit landed: a failed
+	// commit persisted no row, so there is no committed message whose index
+	// row should exist, and every successful job in the batch fails with the
+	// commit error (the shape the caller's own after transaction never had the
+	// chance to run).
+	afterCommits := 0
+	if commitErr == nil {
+		afterCommits = w.runAfter(batch, results)
+	}
+	// Report the batch before delivering results, so an observer's record is
+	// complete by the time every caller has returned (the histogram test reads
+	// it after wg.Wait).
+	if w.observe != nil {
+		w.observe(len(batch), afterCommits)
+	}
 	for i, job := range batch {
 		if result := results[i]; result.err == nil && commitErr != nil {
 			// The commit failed: no statement of the batch persisted, so the
@@ -377,6 +420,118 @@ run:
 			results[i] = messageResult{err: commitErr}
 		}
 		job.done <- results[i]
+	}
+}
+
+// runAfter is the writer-owned second phase (ENGINE-45): the after-commit work
+// of every job whose primary work committed, run in bounded transactions
+// after the primary commit. It returns the number of after-phase transactions
+// it committed (zero when the batch had no after work), which the batch
+// observer reports. The work runs on the writer's goroutine and lane, so a
+// later batch cannot overtake an earlier batch's after work; the after
+// statements are exactly the job.after surface the caller used to run, so the
+// two lanes and the in-line path keep the same SQL in the same order.
+func (w *messageWriter) runAfter(batch []*messageJob, results []messageResult) int {
+	idxs := make([]int, 0, len(batch))
+	for i, job := range batch {
+		if job.after != nil && results[i].err == nil {
+			idxs = append(idxs, i)
+		}
+	}
+	if len(idxs) == 0 {
+		return 0
+	}
+	commits := 0
+	for start := 0; start < len(idxs); start += afterBatchLimit {
+		end := start + afterBatchLimit
+		if end > len(idxs) {
+			end = len(idxs)
+		}
+		w.runAfterChunk(batch, results, idxs[start:end])
+		commits++
+	}
+	return commits
+}
+
+// runAfterChunk commits one bounded group of after-commit jobs. A single job
+// runs directly in the transaction (its failure rolls back exactly its own
+// statements); a larger group wraps each job in its own savepoint, so one
+// failed after-job rolls back only its own statements while the rest of the
+// group still commits, and a failed commit fails every job in the group that
+// had not already failed. The statements run on a context derived from
+// Background, not the request: the Rust after_commit hooks and Rails'
+// after_commit callbacks are not request-cancellable, and the primary commit
+// already landed, so a disconnecting client must not abort the index/unread
+// work. The begin keeps Background (no deadline), matching the shape the
+// caller used before the second phase was writer-owned.
+func (w *messageWriter) runAfterChunk(batch []*messageJob, results []messageResult, idxs []int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var phaseErr error
+	var commitErr error
+	var tx laneTx
+	func() {
+		// A panicking after-job must not take the writer down with it: its
+		// chunk is rolled back and every job in it reports the panic.
+		defer func() {
+			if p := recover(); p != nil {
+				slog.Error("message after-commit panicked", "error", p)
+				phaseErr = fmt.Errorf("database: message after-commit panic: %v", p)
+				if tx != nil {
+					tx.rollback()
+				}
+			}
+		}()
+		var err error
+		tx, err = w.conn.begin(context.Background())
+		if err != nil {
+			phaseErr = err
+			return
+		}
+		if len(idxs) == 1 {
+			i := idxs[0]
+			if err := batch[i].after(ctx, tx, results[i].message); err != nil {
+				tx.rollback()
+				results[i].afterErr = err
+				return
+			}
+			if err := tx.commit(); err != nil {
+				results[i].afterErr = err
+			}
+			return
+		}
+		for _, i := range idxs {
+			if err := tx.savepoint(); err != nil {
+				results[i].afterErr = err
+				continue
+			}
+			if err := batch[i].after(ctx, tx, results[i].message); err != nil {
+				tx.rollbackTo()
+				tx.releaseSavepoint()
+				results[i].afterErr = err
+				continue
+			}
+			if err := tx.releaseSavepoint(); err != nil {
+				results[i].afterErr = err
+				continue
+			}
+		}
+		if err := tx.commit(); err != nil {
+			commitErr = err
+		}
+	}()
+	if phaseErr == nil && commitErr == nil {
+		return
+	}
+	for _, i := range idxs {
+		if results[i].afterErr != nil {
+			continue
+		}
+		if phaseErr != nil {
+			results[i].afterErr = phaseErr
+		} else {
+			results[i].afterErr = commitErr
+		}
 	}
 }
 

@@ -65,11 +65,12 @@ type DB struct {
 	writer         *messageWriter
 	checkpoints    *checkpointer
 	lane           laneConn
-	// afterMu/afterN/afterCV count callers still inside the write lane's
-	// after-commit work (search index insert + unread bump), which runs in
-	// the request goroutine on the lane after the shared commit. DB.Close
-	// waits for the count to reach zero before closing Write so a committed
-	// write never fails its after() with "database is closed".
+	// afterMu/afterN/afterCV count callers still finishing a queued create —
+	// between submit and the delivery of the writer's result, which now
+	// includes the after-commit work (the writer owns that second phase).
+	// DB.Close waits for the count to reach zero before closing Write so a
+	// caller that already committed never has its tail run against a closed
+	// pool.
 	afterMu sync.Mutex
 	afterN  int
 	afterCV *sync.Cond
@@ -243,10 +244,11 @@ func (d *DB) Close() error {
 	var errs []error
 	if d.writer != nil {
 		d.writer.Close()
-		// Wait for in-flight after-commit work (search insert and unread
-		// bump on the write lane) so a write whose commit landed shares the
-		// close rather than failing its after() statements on the closed
-		// lane, which would report a committed write as failed.
+		// Wait for callers still finishing a queued create (the writer's
+		// after phase runs inside writer.Close's drain, before this count
+		// drains) so a write whose commit landed shares the close rather
+		// than racing the lane teardown, which would report a committed
+		// write as failed.
 		d.afterMu.Lock()
 		for d.afterN > 0 {
 			d.afterCV.Wait()
