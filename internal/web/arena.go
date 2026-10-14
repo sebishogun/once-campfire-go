@@ -184,6 +184,7 @@ func borrowResponseBuffer(w http.ResponseWriter, arena *requestArena) *responseB
 	b.encoded = nil
 	b.assembly = nil
 	b.encodedLength = 0
+	b.cachedMapBody = false
 	return b
 }
 

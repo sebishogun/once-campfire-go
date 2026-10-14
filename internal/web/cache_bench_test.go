@@ -18,19 +18,18 @@ import (
 	"github.com/basecamp/once-campfire-go/internal/rails"
 )
 
-// BenchmarkCacheKeys measures the per-request key builders the whole-response
-// and sidebar-page caches run on every lookup. Both build and hash the key
-// inside the zero-allocation envelope (0 B/op, 0 allocs/op); a shape outside
-// the envelope is rejected by the preflight before the builder runs (see
-// TestResponseCacheKeyEnvelope). Before this change the response key returned a
-// string (2 allocs / 152 B per call on this shape) and the sidebar key went
-// through fmt.Sprintf.
+// BenchmarkCacheKeys measures the per-request key path the whole-response and
+// sidebar-page caches run on every lookup: the zero-allocation preflight
+// (responseKeySize / sidebarPageKeySize) and the builder+hash, separately and
+// together. Both build and hash inside the envelope (0 B/op, 0 allocs/op); a
+// shape outside the envelope is rejected by the preflight before the builder
+// runs (see TestResponseCacheKeyEnvelope). The "total" sub-benchmarks are the
+// honest production figure — the preflight runs before the builder on the real
+// path. Before this change the response key returned a string (2 allocs /
+// 152 B per call on this shape) and the sidebar key went through fmt.Sprintf.
 func BenchmarkCacheKeys(b *testing.B) {
-	b.Run("response", func(b *testing.B) {
-		info := &requestInfo{host: "campfire.test", origin: "http://campfire.test"}
-		r := httptest.NewRequest("GET", "/searches?q=parrot", nil)
-		r.Form = map[string][]string{"q": {"parrot"}}
-		round := &responseRound{version: 42, user: 7, gzip: true}
+	b.Run("response-build", func(b *testing.B) {
+		info, r, round := responseKeyFixture()
 		var sink [32]byte
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -40,12 +39,54 @@ func BenchmarkCacheKeys(b *testing.B) {
 		}
 		_ = sink
 	})
-	b.Run("sidebar", func(b *testing.B) {
+	b.Run("response-preflight", func(b *testing.B) {
+		info, r, round := responseKeyFixture()
+		var sink int
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			size, ok := responseKeySize(info, r, round, 42)
+			if !ok {
+				b.Fatal("fixture outside the envelope")
+			}
+			sink = size
+		}
+		_ = sink
+	})
+	b.Run("response-total", func(b *testing.B) {
+		info, r, round := responseKeyFixture()
+		var sink [32]byte
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, ok := responseKeySize(info, r, round, 42); !ok {
+				b.Fatal("fixture outside the envelope")
+			}
+			var buf [responseKeyBufSize]byte
+			sink = sha256.Sum256(appendResponseCacheKey(buf[:0], info, r, round, 42))
+		}
+		_ = sink
+	})
+	b.Run("sidebar-build", func(b *testing.B) {
 		u := database.User{ID: 3, Name: "fixture", Role: 1}
 		var sink [32]byte
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
+			var buf [maxSidebarPageKeySize]byte
+			sink = sha256.Sum256(appendSidebarPageKey(buf[:0], 7, 1, u, false))
+		}
+		_ = sink
+	})
+	b.Run("sidebar-total", func(b *testing.B) {
+		u := database.User{ID: 3, Name: "fixture", Role: 1}
+		var sink [32]byte
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, ok := sidebarPageKeySize(7, 1, u, false); !ok {
+				b.Fatal("fixture outside the envelope")
+			}
 			var buf [maxSidebarPageKeySize]byte
 			sink = sha256.Sum256(appendSidebarPageKey(buf[:0], 7, 1, u, false))
 		}
@@ -210,12 +251,21 @@ func BenchmarkWarmSearchAB(b *testing.B) {
 	}
 }
 
-// BenchmarkWarmSearchMixed measures the target query under eviction pressure:
-// a small response-cache budget is filled with room pages and many distinct
-// matching search pages, the target is evicted and re-filled, and the timed
-// requests are warm hits while the cache holds other shapes.
+// BenchmarkWarmSearchMixed measures a mixed room/search warm sequence under
+// real eviction pressure. The response cache runs with a 1 MiB budget and the
+// corpus renders a large page per query, so the flood of distinct matching
+// queries crosses the budget and evicts the target; the benchmark ASSERTS the
+// eviction (the target misses after the flood, hit counter unmoved) before it
+// times the alternating room/search sequence. The "off" sub-benchmark times
+// the same sequence with the response cache disabled.
 func BenchmarkWarmSearchMixed(b *testing.B) {
-	app, server, cookie, user := benchSearchApp(b, "2")
+	b.Run("on", func(b *testing.B) { benchWarmSearchMixed(b, "1") })
+	b.Run("off", func(b *testing.B) { benchWarmSearchMixed(b, "0") })
+}
+
+func benchWarmSearchMixed(b *testing.B, responseMB string) {
+	app, server, cookie, user := benchSearchApp(b, responseMB)
+	engages := responseMB != "0"
 	ctx := context.Background()
 	rooms, err := app.DB.Rooms(ctx, user.ID)
 	if err != nil || len(rooms) == 0 {
@@ -227,7 +277,10 @@ func BenchmarkWarmSearchMixed(b *testing.B) {
 		words = append(words, fmt.Sprintf("floodword%03d", i))
 	}
 	corpus := strings.Join(words, " ")
-	for i := 0; i < 3; i++ {
+	// Forty messages each carrying every flood word: every query matches all
+	// forty, so one search page is large enough that ninety distinct queries
+	// cross a 1 MiB budget.
+	for i := 0; i < 40; i++ {
 		if _, err := app.DB.CreateMessage(ctx, user.ID, room.ID, fmt.Sprintf("mixed-%d", i), "<p>"+corpus+"</p>", corpus); err != nil {
 			b.Fatal(err)
 		}
@@ -240,20 +293,40 @@ func BenchmarkWarmSearchMixed(b *testing.B) {
 	for i := 1; i < 90; i++ {
 		benchGet(b, client, server.URL, fmt.Sprintf("/searches?q=floodword%03d", i), cookie, "gzip")
 	}
-	// The target was evicted by the flood; re-fill it and prove the next
-	// request is a hit.
-	benchGet(b, client, server.URL, target, cookie, "gzip")
-	hits0, _ := app.responses.counters()
-	benchGet(b, client, server.URL, target, cookie, "gzip")
-	hits1, misses1 := app.responses.counters()
-	if hits1 <= hits0 {
-		b.Fatalf("mixed-pressure warm request did not hit (hits %d -> %d, misses %d)", hits0, hits1, misses1)
+	var entries, size, limit int
+	var warmHits uint64
+	if engages {
+		entries, size, limit = app.responses.stats()
+		if size > limit {
+			b.Fatalf("cache over budget: size %d > limit %d", size, limit)
+		}
+		hits0, misses0 := app.responses.counters()
+		benchGet(b, client, server.URL, target, cookie, "gzip")
+		hits1, misses1 := app.responses.counters()
+		if hits1 != hits0 || misses1 <= misses0 {
+			b.Fatalf("the flood did not evict the target: hits %d->%d misses %d->%d (entries %d size %d limit %d)", hits0, hits1, misses0, misses1, entries, size, limit)
+		}
+		// The eviction probe re-filled the target; prove the timed sequence is
+		// warm.
+		hits2, _ := app.responses.counters()
+		benchGet(b, client, server.URL, target, cookie, "gzip")
+		hits3, misses3 := app.responses.counters()
+		if hits3 <= hits2 {
+			b.Fatalf("target did not hit after re-fill (hits %d -> %d, misses %d)", hits2, hits3, misses3)
+		}
+		warmHits = hits3 - hits2
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	// ReportMetric must follow ResetTimer: ResetTimer clears user metrics.
-	b.ReportMetric(float64(hits1-hits0), "warm_hits")
+	if engages {
+		b.ReportMetric(float64(warmHits), "warm_hits")
+		b.ReportMetric(float64(entries), "entries_after_flood")
+		b.ReportMetric(float64(size), "size_after_flood")
+		b.ReportMetric(float64(limit), "limit")
+	}
 	for i := 0; i < b.N; i++ {
 		benchGet(b, client, server.URL, target, cookie, "gzip")
+		benchGet(b, client, server.URL, roomPath, cookie, "gzip")
 	}
 }

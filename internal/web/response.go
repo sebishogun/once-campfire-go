@@ -62,6 +62,13 @@ type responseBuffer struct {
 	// head block); a request that later falls back to the map path restores
 	// them via restoreRecordedHeaders.
 	framed bool
+	// cachedMapBody marks a whole-response-cache hit whose stored response was
+	// a map-path render. The fresh map path leaves framing to the server (one
+	// body write), so the hit must not emit an explicit Content-Length either,
+	// or the two would differ (chunked vs fixed-length). A hit whose stored
+	// response was a recorded/encoded render (which set an explicit length)
+	// leaves this false so finish emits the length from the part.
+	cachedMapBody bool
 	// recordedHead is the precomposed ENGINE-49 head block (arena memory),
 	// emitted verbatim by the owned writer at finish; precomposed marks the
 	// path taken, recordedEtag is the validator the block was built from
@@ -172,8 +179,11 @@ func (w *responseBuffer) finish(r *http.Request) {
 	}
 	// Content-Length is formatted into a stack buffer; the one string that
 	// reaches the header map is the allocation, not the integer conversion.
+	// A map-path hit (cachedMapBody) skips this entirely: its fresh response
+	// left framing to the server, so the hit writes the body and lets the
+	// server frame it the same way.
 	var length [20]byte
-	if w.status != 204 && w.status != 304 {
+	if w.status != 204 && w.status != 304 && !w.cachedMapBody {
 		switch {
 		case len(w.encoded) > 0:
 			h.Set("Content-Length", string(strconv.AppendInt(length[:0], int64(len(w.encoded)), 10)))
@@ -185,12 +195,6 @@ func (w *responseBuffer) finish(r *http.Request) {
 				size += len(part)
 			}
 			h.Set("Content-Length", string(strconv.AppendInt(length[:0], int64(size), 10)))
-		case w.body.Len() > 0:
-			// The map path's own body. Setting it explicitly (rather than
-			// leaving Go's server to infer it) keeps a fresh map-path response
-			// framed identically to a response-cache hit, which serves the same
-			// bytes through parts, and gives a HEAD response the GET length.
-			h.Set("Content-Length", string(strconv.AppendInt(length[:0], int64(w.body.Len()), 10)))
 		}
 	}
 	w.ResponseWriter.WriteHeader(w.status)

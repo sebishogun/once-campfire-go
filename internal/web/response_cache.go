@@ -48,6 +48,11 @@ type cachedResponse struct {
 	body    []byte
 	header  http.Header
 	cost    int
+	// explicitLength records whether the fresh response set Content-Length
+	// itself (the recorded and precomposed paths) rather than leaving framing
+	// to the server (the map path). A hit reproduces the same choice so the
+	// wire framing is identical to the fresh response.
+	explicitLength bool
 }
 type responseCache struct {
 	mu           sync.Mutex
@@ -121,6 +126,14 @@ func (c *responseCache) counters() (hits, misses uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.hits, c.misses
+}
+
+// stats reports the LRU occupancy so tests and benchmarks can assert that an
+// eviction actually happened rather than assuming it.
+func (c *responseCache) stats() (entries, size, limit int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries), c.size, c.limit
 }
 
 // beginResponseCache starts a caching round for a request when the route is
@@ -382,6 +395,9 @@ func (s *Server) serveCached(entry *cachedResponse, w http.ResponseWriter, r *ht
 		}
 		buffered.parts = buffered.partsBuf[:1]
 		buffered.parts[0] = entry.body
+		// A map-path stored response left Content-Length to the server; the
+		// hit must do the same (see cachedMapBody).
+		buffered.cachedMapBody = !entry.explicitLength
 		return
 	}
 	// No response buffer in the chain (direct capture writers): write the
@@ -482,7 +498,7 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 	if !strings.Contains(header.Get("Vary"), "Accept-Encoding") {
 		header.Add("Vary", "Accept-Encoding")
 	}
-	entry := &cachedResponse{digest: sha256.Sum256(key), key: bytes.Clone(key), version: round.version, body: bytes.Clone(wire), header: header}
+	entry := &cachedResponse{digest: sha256.Sum256(key), key: bytes.Clone(key), version: round.version, body: bytes.Clone(wire), header: header, explicitLength: len(w.encoded) > 0 || w.encodedLength > 0 || len(w.parts) > 0}
 	entry.cost = cap(entry.body) + len(entry.key) + 1024
 	for name, values := range header {
 		entry.cost += len(name)
