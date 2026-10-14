@@ -65,11 +65,11 @@ func newSidebarPageCache(limit int) *sidebarPageCache {
 // the page re-renders. The account row is not in the key: every audited
 // account write bumps the gate, and the read cache carries the same
 // version-only limit for un-audited account SQL.
-func sidebarPageKey(version uint64, u database.User, frame bool) string {
+func sidebarPageKey(version, generation uint64, u database.User, frame bool) string {
 	if frame {
-		return fmt.Sprintf("sidebar-page/%d/%d/%d/%s/%d/frame", version, u.ID, u.UpdatedAt.UnixMicro(), u.Name, u.Role)
+		return fmt.Sprintf("sidebar-page/%d/%d/%d/%d/%s/%d/frame", version, generation, u.ID, u.UpdatedAt.UnixMicro(), u.Name, u.Role)
 	}
-	return fmt.Sprintf("sidebar-page/%d/%d/%d/%s/%d", version, u.ID, u.UpdatedAt.UnixMicro(), u.Name, u.Role)
+	return fmt.Sprintf("sidebar-page/%d/%d/%d/%d/%s/%d", version, generation, u.ID, u.UpdatedAt.UnixMicro(), u.Name, u.Role)
 }
 
 func (c *sidebarPageCache) get(key string) (sidebarPageEntry, bool) {
@@ -111,7 +111,7 @@ func (c *sidebarPageCache) put(entry sidebarPageEntry) {
 // and the same bytes then serve every request until the next sidebar-visible
 // write. body aliases the render buffer, so the entry copies what it keeps.
 func (s *Server) storeSidebarPage(p page, body []byte) {
-	key := sidebarPageKey(p.gateVersion, p.User, p.Frame)
+	key := sidebarPageKey(p.gateVersion, p.gateGeneration, p.User, p.Frame)
 	var compressed bytes.Buffer
 	writer, _ := gzip.NewWriterLevel(&compressed, 6)
 	writer.Header.OS = 3

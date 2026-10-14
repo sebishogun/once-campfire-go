@@ -149,13 +149,15 @@ func newSearchResultCache(limit int) *searchResultCache {
 // searchCacheKey digests the four key components in place; the digest is the
 // map key, so a lookup allocates nothing. The length-prefixed query keeps the
 // digest input injective.
-func searchCacheKey(user int64, query string, corpus, membership int64) [32]byte {
+func searchCacheKey(user int64, query string, corpus, membership int64, generation uint64) [32]byte {
 	var buf [128]byte
 	b := strconv.AppendInt(buf[:0], user, 10)
 	b = append(b, ',')
 	b = strconv.AppendInt(b, corpus, 10)
 	b = append(b, ',')
 	b = strconv.AppendInt(b, membership, 10)
+	b = append(b, ',')
+	b = strconv.AppendUint(b, generation, 10)
 	b = append(b, ',')
 	b = strconv.AppendInt(b, int64(len(query)), 10)
 	b = append(b, ':')
@@ -166,8 +168,8 @@ func searchCacheKey(user int64, query string, corpus, membership int64) [32]byte
 // get returns the cached result for the key, or false. On a hit the entry is
 // verified to carry the exact key — an astronomically unlikely digest
 // collision reads as a miss rather than another user's page.
-func (c *searchResultCache) get(user int64, query string, corpus, membership int64) (searchResult, bool) {
-	key := searchCacheKey(user, query, corpus, membership)
+func (c *searchResultCache) get(user int64, query string, corpus, membership int64, generation uint64) (searchResult, bool) {
+	key := searchCacheKey(user, query, corpus, membership, generation)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
@@ -181,11 +183,11 @@ func (c *searchResultCache) get(user int64, query string, corpus, membership int
 // put stores result under the key when it fits the budget. It replaces any
 // earlier entry for the key and charges the decoded size. An entry over
 // limit/4 (or a disabled cache) changes nothing.
-func (c *searchResultCache) put(user int64, query string, corpus, membership int64, result searchResult) {
+func (c *searchResultCache) put(user int64, query string, corpus, membership int64, generation uint64, result searchResult) {
 	if c.limit/4 <= 0 {
 		return
 	}
-	key := searchCacheKey(user, query, corpus, membership)
+	key := searchCacheKey(user, query, corpus, membership, generation)
 	size := searchResultBytes(result)
 	if size > c.limit/4 {
 		return

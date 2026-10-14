@@ -211,8 +211,11 @@ type page struct {
 	SidebarHTML                  template.HTML
 	// gateVersion carries the sidebar registry version from Server.sidebar
 	// to render, where the frame render records the served gate; unexported:
-	// only the sidebar handler sets it.
-	gateVersion  uint64
+	// only the sidebar handler sets it. gateGeneration carries the observed
+	// database generation captured before the sidebar's reads, so a commit
+	// from any connection invalidates the served gate.
+	gateVersion    uint64
+	gateGeneration uint64
 	Title, Error string
 	User         database.User
 	Room         database.Room
@@ -802,7 +805,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 	// A full sidebar render (miss path, or a warm layout render that found
 	// no page) fills the whole-page cache under the served gate version.
 	// Flash-carrying renders are per-request state and never stored.
-	if name == "sidebar" && p.gateVersion > 0 && p.Notice == "" && p.Error == "" {
+	if name == "sidebar" && p.gateVersion > 0 && p.gateGeneration > 0 && p.Notice == "" && p.Error == "" {
 		s.storeSidebarPage(p, b.Bytes())
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1210,6 +1213,22 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request, u databas
 		writeStream(w, markup)
 	}
 }
+
+// requestGeneration returns the immutable database generation observed for
+// this request before any reads (ServeHTTP captures it once) and whether one
+// is available. Callers that cannot observe a generation must neither consult
+// nor admit a generation-gated cache: an unobservable generation cannot prove
+// freshness.
+func (s *Server) requestGeneration(r *http.Request) (uint64, bool) {
+	if info := requestMetadata(r.Context()); info != nil && info.databaseVersion != 0 {
+		return info.databaseVersion, true
+	}
+	if version, err := s.DB.ResponseVersion(r.Context()); err == nil && version != 0 {
+		return version, true
+	}
+	return 0, false
+}
+
 func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User) {
 	// The served gate comes from the sidebar version registry alone; a warm
 	// request serves the cached frame with only the layout rendered fresh,
@@ -1221,8 +1240,10 @@ func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User
 		s.fail(w, err)
 		return
 	}
-	if gate, ok := s.sidebarGate(u.ID); ok && gate.version == version {
-		if frame, ok := s.fragments.get(gate.frameKey); ok {
+	generation, generationOK := s.requestGeneration(r)
+	if generationOK {
+		if gate, ok := s.sidebarGate(u.ID); ok && gate.version == version && gate.generation == generation {
+			if frame, ok := s.fragments.get(gate.frameKey); ok {
 			// Whole-page serve: the gate version covers every page input,
 			// so the precompressed document built for it is the page this
 			// request would render. A session flash is per-request state
@@ -1230,13 +1251,14 @@ func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User
 			state := browserState(r)
 			state.load()
 			if state.values["flash"] == nil {
-				if entry, ok := s.sidebarPages.get(sidebarPageKey(version, u, r.Header.Get("Turbo-Frame") != "")); ok {
-					s.serveSidebarPage(w, r, entry)
-					return
+					if entry, ok := s.sidebarPages.get(sidebarPageKey(version, generation, u, r.Header.Get("Turbo-Frame") != "")); ok {
+						s.serveSidebarPage(w, r, entry)
+						return
+					}
 				}
+				s.render(w, r, "sidebar", 200, page{User: u, SidebarHTML: frame, gateVersion: version, gateGeneration: generation})
+				return
 			}
-			s.render(w, r, "sidebar", 200, page{User: u, SidebarHTML: frame, gateVersion: version})
-			return
 		}
 	}
 	items, placeholders, err := s.sidebarData(r, u)
@@ -1244,7 +1266,7 @@ func (s *Server) sidebar(w http.ResponseWriter, r *http.Request, u database.User
 		s.fail(w, err)
 		return
 	}
-	s.render(w, r, "sidebar", 200, page{Placeholders: placeholders, SidebarRooms: items, User: u, RoomsStream: s.Secrets.SignStream("rooms"), UserRoomsStream: s.Secrets.SignStream(rails.UserRoomsStream(u.ID)), gateVersion: version})
+	s.render(w, r, "sidebar", 200, page{Placeholders: placeholders, SidebarRooms: items, User: u, RoomsStream: s.Secrets.SignStream("rooms"), UserRoomsStream: s.Secrets.SignStream(rails.UserRoomsStream(u.ID)), gateVersion: version, gateGeneration: generation})
 }
 func (s *Server) search(w http.ResponseWriter, r *http.Request, u database.User) {
 	q := database.SearchQuery(r.FormValue("q"))
@@ -1280,8 +1302,13 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request, u database.User)
 		s.serveCached(hit, w, r)
 		return
 	}
-	if s.searchCache != nil {
-		if result, ok := s.searchCache.get(u.ID, q, s.DB.CorpusVersion(), s.DB.MembershipVersion()); ok {
+	// The observed generation and the local versions are captured BEFORE the
+	// reads below: a commit from any connection after this point must not be
+	// served (lookup) or admitted (store) as if the reads had seen it.
+	generation, generationOK := s.requestGeneration(r)
+	corpus, membership := s.DB.CorpusVersion(), s.DB.MembershipVersion()
+	if s.searchCache != nil && generationOK {
+		if result, ok := s.searchCache.get(u.ID, q, corpus, membership, generation); ok {
 			// Hit: the message fragments come from the recorded piece cache
 			// (keyed by exactly these messages' id/stamp pairs), so no Search,
 			// Rooms or RecentSearches read happens and nothing renders the
@@ -1307,14 +1334,14 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request, u database.User)
 		s.fail(w, err)
 		return
 	}
-	if s.searchCache != nil {
-		// Store only when the versions are still the ones the reads saw: a
-		// write that committed mid-request must not tag fresh rows with a
-		// stale version (or vice versa). A dropped store is just a miss.
-		corpus := s.DB.CorpusVersion()
-		membership := s.DB.MembershipVersion()
-		if s.DB.CorpusVersion() == corpus && s.DB.MembershipVersion() == membership {
-			s.searchCache.put(u.ID, q, corpus, membership, searchResult{recent: recent, messages: messages})
+	if s.searchCache != nil && generationOK {
+		// Store only when the generation and versions are still the ones the
+		// reads began under: a write that committed mid-request (local or
+		// from another connection) must not be admitted under the newer
+		// values. A dropped store is just a miss.
+		current, err := s.DB.ResponseVersion(r.Context())
+		if err == nil && current == generation && s.DB.CorpusVersion() == corpus && s.DB.MembershipVersion() == membership {
+			s.searchCache.put(u.ID, q, corpus, membership, generation, searchResult{recent: recent, messages: messages})
 		}
 	}
 	s.render(w, r, "search", 200, page{Title: "Search", Query: q, User: u, Rooms: rooms, Messages: viewMessages(messages), RecentSearches: recent, SearchResultCount: len(messages)})

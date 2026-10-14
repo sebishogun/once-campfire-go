@@ -1,0 +1,4 @@
+2026/10/05 23:58:27 INFO listening address=127.0.0.1:39471 tls=false
+2026/10/05 23:58:27 INFO listening address=[::]:33669 tls=false
+
+(process:336967): VIPS-WARNING **: 23:59:03.044: unable to load "/usr/lib/vips-modules-8.18/vips-openslide.so" -- libopenslide.so.1: cannot open shared object file: No such file or directory

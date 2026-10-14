@@ -161,18 +161,18 @@ func TestSidebarPageCacheStaysFreshForUserRow(t *testing.T) {
 // storage accounting without the HTTP pipeline.
 func TestSidebarPageCacheKeyShape(t *testing.T) {
 	u := databaseUserFixture()
-	key := sidebarPageKey(7, u, false)
+	key := sidebarPageKey(7, 1, u, false)
 	if !strings.HasPrefix(key, "sidebar-page/7/") || strings.Contains(key, "/frame") {
 		t.Fatalf("document key shape: %q", key)
 	}
-	frameKey := sidebarPageKey(7, u, true)
+	frameKey := sidebarPageKey(7, 1, u, true)
 	if !strings.HasSuffix(frameKey, "/frame") {
 		t.Fatalf("frame key shape: %q", frameKey)
 	}
-	if key == sidebarPageKey(8, u, false) {
+	if key == sidebarPageKey(8, 1, u, false) {
 		t.Fatal("version not part of the key")
 	}
-	if key == sidebarPageKey(7, database.User{}, false) {
+	if key == sidebarPageKey(7, 1, database.User{}, false) {
 		t.Fatal("user markers not part of the key")
 	}
 }

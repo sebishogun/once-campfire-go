@@ -23,6 +23,8 @@ func TestEncodingSelection(t *testing.T) {
 		{"gzip;q=0.5", "gzip"},
 		{"gzip;q=0.5, identity;q=1", "identity"},
 		{"*;q=1", "gzip"},
+		{"*, gzip;q=0", "identity"},
+		{"*, br, br, br, br, br, br, br, br, br, br, br, br, br, br, br, gzip;q=0", "identity"},
 		{"br", "identity"},
 		{"gzip;q=0, identity;q=0", ""},
 		{"gzip;q=0, gzip;q=1", "identity"},

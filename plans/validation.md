@@ -789,3 +789,37 @@ Every implementation lands in a ~20% band (C 7,460, Rust 8,998, upstream Go
 4 KB frames per post — room/membership/sqlite_sequence/FTS leaf pages), not
 an app cost; no further change forced. Raw: `/tmp/opencode/vg-postfix/` and
 `/tmp/opencode/vg-full/`.
+
+## DHH review fixes (2026-10-14, PR #10; merged main c4ab53d)
+
+All four reproduced findings fixed on `engine-v2`:
+
+1. **Warm search after a foreign membership delete.** The search result cache
+   key now carries the immutable generation observed BEFORE the request's
+   reads; admission stores under that pre-read generation only after
+   re-checking it and the local corpus/membership counters. Regression:
+   `TestSearchCacheObservesForeignMembershipRevocation` (a separate SQLite
+   connection deletes the membership) and `TestSearchCacheGenerationAdmission`
+   (the mid-read admission contract).
+2. **Cable authorization memo after the same foreign revocation.** Entries
+   carry the generation captured before the authorizing query; a lookup serves
+   only while it matches and admission is skipped when the generation cannot
+   be observed. Regression: `TestAuthzMemoObservesForeignRevocation`.
+3. **Sidebar gate and whole-page cache** carry the same generation, so a
+   foreign commit invalidates the warm sidebar. The DROP-table tests now
+   assert that invalidation and re-admit at the new generation to isolate the
+   hit path (a DDL is a commit from another connection).
+4. **Accept-Encoding with more than 16 fields** (`*, br*15, gzip;q=0`): the
+   parser is one streaming pass with no field cap and the wildcard expanded
+   after all explicit tokens, so gzip;q=0 is honoured; regression cases added.
+
+`PRAGMA data_version` now runs on a direct `csqlite` handle (prepared
+statement, one short mutex) instead of database/sql: zero allocations per
+read, which the publish allocation pins require (the database/sql read cost
+12 allocs/publish). The statement-count pins return to 12/5 because the read
+no longer goes through database/sql.
+
+Verification: full suite and race suite green on the fixed tree. The shared
+harness re-measurement was taken while unrelated services (Elasticsearch and
+minio) held the host at load 23-54, so those numbers are discarded; a quiet
+host re-run is pending.

@@ -763,6 +763,12 @@ type authzEntry struct {
 	sess        int64
 	member      int64
 	userVersion int64
+	// responseVersion is the observed database generation (PRAGMA
+	// data_version on the pinned reader) captured before the authorizing
+	// query ran. A lookup serves the entry only while the generation is
+	// unchanged, so a commit from any connection — including a foreign
+	// writer that revokes a membership — invalidates it.
+	responseVersion uint64
 }
 
 const (
@@ -796,12 +802,13 @@ func newAuthzCache() *authzCache {
 // updating an existing entry in place (its FIFO slot stays put). The store
 // must only be used with the generations the query ran under; a later lookup
 // with moved generations misses and re-queries.
-func (c *authzCache) store(key authzKey, userID, sess, member, userVersion int64) {
+func (c *authzCache) store(key authzKey, userID, sess, member, userVersion int64, responseVersion uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e := c.m[key]; e != nil {
 		e.userID = userID
 		e.sess, e.member, e.userVersion = sess, member, userVersion
+		e.responseVersion = responseVersion
 		return
 	}
 	if len(c.ring)-c.head >= authzCacheMax {
@@ -814,7 +821,7 @@ func (c *authzCache) store(key authzKey, userID, sess, member, userVersion int64
 			c.head = 0
 		}
 	}
-	c.m[key] = &authzEntry{userID: userID, sess: sess, member: member, userVersion: userVersion}
+	c.m[key] = &authzEntry{userID: userID, sess: sess, member: member, userVersion: userVersion, responseVersion: responseVersion}
 	c.ring = append(c.ring, key)
 }
 
@@ -829,6 +836,12 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 	sess := h.db.SessionVersion()
 	member := h.db.MembershipVersion()
 	userVersion := h.db.UserVersion()
+	// The observed generation is captured BEFORE the authorizing queries: a
+	// foreign commit after this point moves it and every entry stored or
+	// served in this pass misses on the next publish. When it cannot be
+	// observed, this pass neither serves nor stores cache entries.
+	responseVersion, versionErr := h.db.ResponseVersion(ctx)
+	cacheable := versionErr == nil
 	type miss struct {
 		index int
 		key   authzKey
@@ -861,7 +874,7 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 		if j < memoLen {
 			continue
 		}
-		if e := h.authz.m[key]; e != nil && e.sess == sess && e.member == member && e.userVersion == userVersion {
+		if e := h.authz.m[key]; e != nil && cacheable && e.sess == sess && e.member == member && e.userVersion == userVersion && e.responseVersion == responseVersion {
 			r.user = e.userID
 			if memoLen < len(memo) {
 				memo[memoLen] = struct {
@@ -908,8 +921,8 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient) {
 	for _, m := range misses {
 		allowed := rooms[m.key.room].allowed
 		recipients[m.index].user = allowed[m.key.token]
-		if allowed != nil {
-			h.authz.store(m.key, allowed[m.key.token], sess, member, userVersion)
+		if allowed != nil && cacheable {
+			h.authz.store(m.key, allowed[m.key.token], sess, member, userVersion, responseVersion)
 		}
 	}
 }

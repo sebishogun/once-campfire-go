@@ -20,52 +20,11 @@ import (
 // identity token (quality first, then preference), which is the ordering the
 // middleware used to obtain by sorting the token list.
 func Encoding(header string) string {
-	var accepts [16]encodingItem
-	count := 0
-	for count < len(accepts) {
-		var part string
-		if comma := strings.IndexByte(header, ','); comma >= 0 {
-			part, header = header[:comma], header[comma+1:]
-		} else {
-			part, header = header, ""
-		}
-		part = strings.TrimSpace(part)
-		if part != "" {
-			name, params, _ := strings.Cut(part, ";")
-			name = strings.TrimSpace(name)
-			q := 1.0
-			params = strings.TrimSpace(params)
-			if strings.HasPrefix(params, "q=") {
-				q = quality(params[2:])
-			}
-			pref := 2
-			if name == "gzip" {
-				pref = 0
-			} else if name == "identity" {
-				pref = 1
-			}
-			accepts[count] = encodingItem{name: name, q: q, pref: pref}
-			count++
-		}
-		if header == "" {
-			break
-		}
-	}
-
-	explicitGzip, explicitIdentity := false, false
-	for i := 0; i < count; i++ {
-		switch accepts[i].name {
-		case "gzip":
-			explicitGzip = true
-		case "identity":
-			explicitIdentity = true
-		}
-	}
-
 	var (
 		gzipRejected, identityRejected bool
 		gzipQ, identityQ               = -1.0, -1.0
 		gzipPref, identityPref         = 3, 3
+		explicitGzip, explicitIdentity bool
 		expandedIdentity               bool
 	)
 	add := func(name string, q float64, pref int) {
@@ -89,22 +48,59 @@ func Encoding(header string) string {
 			}
 		}
 	}
-	wildcard := false
-	for i := 0; i < count; i++ {
-		item := accepts[i]
-		if item.name != "*" {
-			add(item.name, item.q, item.pref)
+	// One streaming pass over every token: there is no field cap, so a long
+	// header (e.g. a wildcard followed by many br fields and a final
+	// gzip;q=0) is parsed to its end, exactly as the reference does. The
+	// first wildcard is remembered and expanded after the pass, once every
+	// explicit token (anywhere in the header) has set the explicit flags the
+	// expansion consults.
+	wildcardSeen := false
+	var wildcardQ float64
+	wildcardPref := 3
+	for header != "" {
+		var part string
+		if comma := strings.IndexByte(header, ','); comma >= 0 {
+			part, header = header[:comma], header[comma+1:]
+		} else {
+			part, header = header, ""
+		}
+		part = strings.TrimSpace(part)
+		if part == "" {
 			continue
 		}
-		if wildcard {
-			continue
+		name, params, _ := strings.Cut(part, ";")
+		name = strings.TrimSpace(name)
+		q := 1.0
+		params = strings.TrimSpace(params)
+		if strings.HasPrefix(params, "q=") {
+			q = quality(params[2:])
 		}
-		wildcard = true
+		pref := 2
+		if name == "gzip" {
+			pref = 0
+		} else if name == "identity" {
+			pref = 1
+		}
+		switch name {
+		case "*":
+			if !wildcardSeen {
+				wildcardSeen = true
+				wildcardQ, wildcardPref = q, pref
+			}
+		case "gzip":
+			explicitGzip = true
+			add("gzip", q, pref)
+		case "identity":
+			explicitIdentity = true
+			add("identity", q, pref)
+		}
+	}
+	if wildcardSeen {
 		if !explicitGzip {
-			add("gzip", item.q, item.pref)
+			add("gzip", wildcardQ, wildcardPref)
 		}
 		if !explicitIdentity {
-			add("identity", item.q, item.pref)
+			add("identity", wildcardQ, wildcardPref)
 		}
 	}
 
@@ -130,13 +126,6 @@ func Encoding(header string) string {
 		return "identity"
 	}
 	return ""
-}
-
-// encodingItem is one parsed Accept-Encoding token.
-type encodingItem struct {
-	name string
-	q    float64
-	pref int
 }
 
 // quality parses the numeric prefix of a q= parameter. A malformed value

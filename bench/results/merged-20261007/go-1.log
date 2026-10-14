@@ -1,0 +1,14 @@
+2026/10/07 08:58:49 INFO gc policy gc_percent=100 mem_limit=9223372036854775807 mem_limit_unit=bytes
+2026/10/07 08:58:49 INFO write queue enabled=true group_commit=true
+2026/10/07 08:58:49 INFO message reference cache enabled=true cache_mib=8
+2026/10/07 08:58:49 INFO search result cache enabled=true cache_mib=16
+2026/10/07 08:58:49 INFO recorded response pieces enabled=true cache_mib=32
+2026/10/07 08:58:49 INFO message fragment renderer compiled=true
+2026/10/07 08:58:49 INFO auth fast path enabled=true
+2026/10/07 08:58:49 INFO fast reads enabled=true path=/home/sebishogun/Work/Development/once-campfire-go/bench/.work/go-1-gnoej37l/database.sqlite3 pool_size=4
+2026/10/07 08:58:49 INFO engine mode=on
+2026/10/07 08:58:49 INFO listening address=127.0.0.1:32899 tls=false loop=false
+2026/10/07 08:58:49 INFO listening address=[::]:40065 tls=false loop=false
+2026/10/07 08:58:49 INFO compiled route matching enabled=true
+
+(process:1823257): VIPS-WARNING **: 09:00:14.090: unable to load "/usr/lib/vips-modules-8.18/vips-openslide.so" -- libopenslide.so.1: cannot open shared object file: No such file or directory

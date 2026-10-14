@@ -5,6 +5,7 @@ package cable
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -434,4 +435,35 @@ func TestConcurrentPublishWithRevocation(t *testing.T) {
 	for _, m := range members {
 		expectNone(t, m.client)
 	}
+}
+
+// TestAuthzMemoObservesForeignRevocation pins the reviewer's cable scenario: a
+// membership revoked by a SEPARATE SQLite connection (no audited helper, no
+// local generation bump) must not be served from the warmed authorization
+// memo; the next private publication excludes the socket.
+func TestAuthzMemoObservesForeignRevocation(t *testing.T) {
+	f := newAuthzFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	closed, err := f.db.CreateRoom(ctx, f.stay.ID, "Rooms::Closed", "Foreign", []int64{f.stay.ID, f.victim.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stayC, _ := f.join(t, f.stay, closed.ID)
+	victimC, _ := f.join(t, f.victim, closed.ID)
+	publishExpect(t, ctx, &f, closed.ID, `<turbo-stream action="append"><template>before</template></turbo-stream>`, got(stayC), got(victimC))
+	var path string
+	if err := f.db.Read.QueryRow("SELECT file FROM pragma_database_list WHERE name='main'").Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := sql.Open("sqlite3", "file:"+path+"?_busy_timeout=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := foreign.ExecContext(ctx, "DELETE FROM memberships WHERE room_id=? AND user_id=?", closed.ID, f.victim.ID); err != nil {
+		t.Fatal(err)
+	}
+	foreign.Close()
+	after := "<turbo-stream action=\"append\"><template>after-foreign-revocation</template></turbo-stream>"
+	publishExpect(t, ctx, &f, closed.ID, after, none(victimC), got(stayC))
 }

@@ -103,44 +103,44 @@ func TestSearchResultCacheUnit(t *testing.T) {
 	c := newSearchResultCache(1 << 20)
 	msg := database.Message{ID: 1, RoomID: 2, CreatorID: 3, ClientID: "c", Body: "body", Creator: "bob"}
 	res := searchResult{recent: []string{"alpha"}, messages: []database.Message{msg, msg}}
-	if _, ok := c.get(1, "alpha", 0, 0); ok {
+	if _, ok := c.get(1, "alpha", 0, 0, 1); ok {
 		t.Fatal("cold cache hit")
 	}
-	c.put(1, "alpha", 0, 0, res)
-	got, ok := c.get(1, "alpha", 0, 0)
+	c.put(1, "alpha", 0, 0, 1, res)
+	got, ok := c.get(1, "alpha", 0, 0, 1)
 	if !ok || len(got.messages) != 2 || len(got.recent) != 1 || got.recent[0] != "alpha" {
 		t.Fatalf("round trip: ok=%v got=%+v", ok, got)
 	}
 	// Each key component separates entries.
-	if _, ok := c.get(1, "alpha", 1, 0); ok {
+	if _, ok := c.get(1, "alpha", 1, 0, 1); ok {
 		t.Fatal("corpus bump served a stale entry")
 	}
-	if _, ok := c.get(1, "alpha", 0, 1); ok {
+	if _, ok := c.get(1, "alpha", 0, 1, 1); ok {
 		t.Fatal("membership bump served a stale entry")
 	}
-	if _, ok := c.get(2, "alpha", 0, 0); ok {
+	if _, ok := c.get(2, "alpha", 0, 0, 1); ok {
 		t.Fatal("another user's entry was served")
 	}
-	if _, ok := c.get(1, "beta", 0, 0); ok {
+	if _, ok := c.get(1, "beta", 0, 0, 1); ok {
 		t.Fatal("another query's entry was served")
 	}
 	// A replacement publishes fresh data under the same key.
-	c.put(1, "alpha", 0, 0, searchResult{recent: []string{"beta"}})
-	got, ok = c.get(1, "alpha", 0, 0)
+	c.put(1, "alpha", 0, 0, 1, searchResult{recent: []string{"beta"}})
+	got, ok = c.get(1, "alpha", 0, 0, 1)
 	if !ok || len(got.recent) != 1 || got.recent[0] != "beta" {
 		t.Fatalf("replacement: ok=%v got=%+v", ok, got)
 	}
 	// purgeUser drops exactly that user's entries.
-	c.put(1, "beta", 0, 0, res)
-	c.put(2, "alpha", 0, 0, res)
+	c.put(1, "beta", 0, 0, 1, res)
+	c.put(2, "alpha", 0, 0, 1, res)
 	c.purgeUser(1)
-	if _, ok := c.get(1, "alpha", 0, 0); ok {
+	if _, ok := c.get(1, "alpha", 0, 0, 1); ok {
 		t.Fatal("purged entry served")
 	}
-	if _, ok := c.get(1, "beta", 0, 0); ok {
+	if _, ok := c.get(1, "beta", 0, 0, 1); ok {
 		t.Fatal("purged entry served")
 	}
-	if _, ok := c.get(2, "alpha", 0, 0); !ok {
+	if _, ok := c.get(2, "alpha", 0, 0, 1); !ok {
 		t.Fatal("purge removed another user's entry")
 	}
 }
@@ -149,8 +149,8 @@ func TestSearchResultCacheBounds(t *testing.T) {
 	// An entry larger than limit/4 is rejected outright.
 	c := newSearchResultCache(4000)
 	big := searchResult{messages: []database.Message{{Body: strings.Repeat("x", 2000)}}}
-	c.put(1, "q", 0, 0, big)
-	if _, ok := c.get(1, "q", 0, 0); ok {
+	c.put(1, "q", 0, 0, 1, big)
+	if _, ok := c.get(1, "q", 0, 0, 1); ok {
 		t.Fatal("oversized entry was cached")
 	}
 
@@ -158,7 +158,7 @@ func TestSearchResultCacheBounds(t *testing.T) {
 	// the limit (the 75% prune target is only reached on a crossing).
 	c2 := newSearchResultCache(60 << 10)
 	for i := 0; i < 100; i++ {
-		c2.put(1, fmt.Sprintf("q%03d", i), 0, 0, searchResult{messages: []database.Message{{Body: strings.Repeat("m", 600)}}})
+		c2.put(1, fmt.Sprintf("q%03d", i), 0, 0, 1, searchResult{messages: []database.Message{{Body: strings.Repeat("m", 600)}}})
 	}
 	if c2.bytes > c2.limit {
 		t.Fatalf("cache holds %d bytes over the %d limit", c2.bytes, c2.limit)
@@ -168,17 +168,17 @@ func TestSearchResultCacheBounds(t *testing.T) {
 	if len(c2.entries) >= 100 {
 		t.Fatalf("cache stored all 100 entries (%d bytes)", c2.bytes)
 	}
-	if _, ok := c2.get(1, "q000", 0, 0); ok {
+	if _, ok := c2.get(1, "q000", 0, 0, 1); ok {
 		t.Fatal("oldest entry survived eviction")
 	}
-	if _, ok := c2.get(1, "q099", 0, 0); !ok {
+	if _, ok := c2.get(1, "q099", 0, 0, 1); !ok {
 		t.Fatal("newest entry was evicted before older ones")
 	}
 
 	// A zero budget disables storage but keeps the API usable.
 	c3 := newSearchResultCache(0)
-	c3.put(1, "q", 0, 0, searchResult{recent: []string{"x"}})
-	if _, ok := c3.get(1, "q", 0, 0); ok {
+	c3.put(1, "q", 0, 0, 1, searchResult{recent: []string{"x"}})
+	if _, ok := c3.get(1, "q", 0, 0, 1); ok {
 		t.Fatal("zero-budget cache stored an entry")
 	}
 }
@@ -310,14 +310,31 @@ func TestSearchCachePoisoning(t *testing.T) {
 		t.Fatal("deleted message still in results")
 	}
 
-	// Fill once more, then drop the FTS index: the cached path must still
-	// serve from pieces while the database/sql path fails.
+	// Fill once more, then drop the FTS index: the generation gate correctly
+	// invalidates the warm entry on that DDL (it is a commit from another
+	// connection), so re-admit the same result under the generation observed
+	// after the DDL to isolate the hit path. It must serve from pieces while
+	// the database/sql path fails.
 	onGet = recordedGet(t, client, onServer, "/searches?q=kangaroo", "identity", "", cookie)
 	offGet = recordedGet(t, client, offServer, "/searches?q=kangaroo", "identity", "", cookie)
 	compareSearchExchange(t, "final fill", onGet, offGet)
+	corpus, membership := on.DB.CorpusVersion(), on.DB.MembershipVersion()
+	oldGeneration, err := on.DB.ResponseVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := app.DB.Write.Exec("DROP TABLE message_search_index"); err != nil {
 		t.Fatal(err)
 	}
+	newGeneration, err := on.DB.ResponseVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := on.searchCache.get(user.ID, "kangaroo", corpus, membership, oldGeneration)
+	if !ok {
+		t.Fatal("final fill did not warm the search cache")
+	}
+	on.searchCache.put(user.ID, "kangaroo", corpus, membership, newGeneration, result)
 	onGet = recordedGet(t, client, onServer, "/searches?q=kangaroo", "identity", "", cookie)
 	if onGet.status != 200 || !strings.Contains(body(onGet), "kangaroo pouch") {
 		t.Fatalf("cache path did not serve the filled page after DROP: %d", onGet.status)
@@ -524,5 +541,21 @@ func TestSearchCacheFuzz(t *testing.T) {
 		onGet := recordedGet(t, client, onServer, path, "identity", "", cookie)
 		offGet := recordedGet(t, client, offServer, path, "identity", "", cookie)
 		compareSearchExchange(t, fmt.Sprintf("step %d q=%s", step, query), onGet, offGet)
+	}
+}
+
+// TestSearchCacheGenerationAdmission pins the admission contract: an entry
+// stored under one observed generation is never served once the generation
+// has moved, so a write that lands after the reads cannot be absorbed into a
+// warm entry.
+func TestSearchCacheGenerationAdmission(t *testing.T) {
+	c := newSearchResultCache(1 << 20)
+	res := searchResult{recent: []string{"x"}, messages: []database.Message{{ID: 1, Body: "m"}}}
+	c.put(1, "q", 0, 0, 7, res)
+	if _, ok := c.get(1, "q", 0, 0, 7); !ok {
+		t.Fatal("entry not served under the generation it was admitted under")
+	}
+	if _, ok := c.get(1, "q", 0, 0, 8); ok {
+		t.Fatal("entry served after the observed generation moved")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"github.com/basecamp/once-campfire-go/internal/fastdb/csqlite"
 	"log/slog"
 	"net/url"
 	"os"
@@ -40,13 +41,14 @@ type DB struct {
 	Read                *readPool
 	Write               *sql.DB
 	Now                 func() time.Time
-	// versionDB/version is the pinned read-only connection that observes
-	// every writer's commits (upstream ef00d84): PRAGMA data_version is
+	// versionFast is the pinned read-only handle that observes every
+	// writer's commits (upstream ef00d84): PRAGMA data_version is
 	// connection-local, so it must never run on the read pool. The observed
 	// generation namespaces the web caches, covering commits by external
-	// processes the in-process version counters cannot see.
-	versionDB *sql.DB
-	version   *sql.Conn
+	// processes the in-process version counters cannot see. It is a direct
+	// csqlite handle rather than database/sql so the per-request and
+	// per-publish reads allocate nothing.
+	versionFast *csqlite.VersionReader
 	// sidebar is the in-process sidebar fragment version registry
 	// (internal/database/versions.go); see DB.SidebarVersion.
 	sidebar sidebarVersions
@@ -153,25 +155,18 @@ func open(driver, path string, readers int) (*DB, error) {
 		r.Close()
 		return fail(err)
 	}
-	// The pinned generation-observation connection (upstream ef00d84):
-	// PRAGMA data_version is connection-local, so it must never run on the
-	// read pool.
-	v, err := sql.Open(driver, uri+options+"&mode=ro&_query_only=on")
+	// The pinned generation-observation handle (upstream ef00d84): PRAGMA
+	// data_version is connection-local, so it must never run on the read
+	// pool; the direct cgo handle keeps the read allocation-free.
+	versionFast, err := csqlite.OpenVersionReader(path)
 	if err != nil {
-		r.Close()
-		return fail(err)
-	}
-	v.SetMaxOpenConns(1)
-	version, err := v.Conn(context.Background())
-	if err != nil {
-		v.Close()
 		r.Close()
 		return fail(err)
 	}
 	// The checkpointer opens a second connection to the same file below;
 	// a checkpointed WAL read is not a commit observation, so it must not
-	// share the pinned connection's data_version state.
-	db := &DB{Read: &readPool{DB: r, statements: make(map[string]*sql.Stmt)}, Write: w, versionDB: v, version: version}
+	// share the pinned handle's data_version state.
+	db := &DB{Read: &readPool{DB: r, statements: make(map[string]*sql.Stmt)}, Write: w, versionFast: versionFast}
 	db.afterCV = sync.NewCond(&db.afterMu)
 	queue := true
 	if raw, ok := os.LookupEnv("CAMPFIRE_WRITE_QUEUE"); ok {
@@ -233,8 +228,7 @@ func open(driver, path string, readers int) (*DB, error) {
 	if raw := os.Getenv("CAMPFIRE_FROZEN_TIME"); raw != "" {
 		frozen, err := time.Parse(time.RFC3339Nano, raw)
 		if err != nil {
-			version.Close()
-			v.Close()
+			versionFast.Close()
 			r.Close()
 			return fail(err)
 		}
@@ -270,13 +264,8 @@ func (d *DB) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	if d.version != nil {
-		if err := d.version.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if d.versionDB != nil {
-		if err := d.versionDB.Close(); err != nil {
+	if d.versionFast != nil {
+		if err := d.versionFast.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -377,10 +366,17 @@ func (t timestamp) Scan(value any) error {
 	return fmt.Errorf("invalid timestamp %q", raw)
 }
 
+// errNoVersionReader is returned when a DB was built without its generation
+// handle (tests that construct DB values directly); it is a sentinel so the
+// error path allocates nothing.
+var errNoVersionReader = errors.New("database: no generation reader")
+
 // A pinned reader observes commits from every writer, including this process.
 // PRAGMA data_version is connection-local, so it must never use the read pool.
 func (d *DB) ResponseVersion(ctx context.Context) (uint64, error) {
-	var version uint64
-	err := d.version.QueryRowContext(ctx, "PRAGMA data_version").Scan(&version)
-	return version, err
+	_ = ctx // the direct handle needs no context; kept for call-site symmetry
+	if d.versionFast == nil {
+		return 0, errNoVersionReader
+	}
+	return d.versionFast.Read()
 }

@@ -1,0 +1,6 @@
+2026/10/06 02:19:05 INFO recorded response pieces enabled=true cache_mib=32
+2026/10/06 02:19:05 INFO engine mode=on
+2026/10/06 02:19:05 INFO listening address=127.0.0.1:50907 tls=false
+2026/10/06 02:19:05 INFO listening address=[::]:39899 tls=false
+
+(process:581264): VIPS-WARNING **: 02:19:40.909: unable to load "/usr/lib/vips-modules-8.18/vips-openslide.so" -- libopenslide.so.1: cannot open shared object file: No such file or directory
