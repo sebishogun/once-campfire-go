@@ -537,11 +537,10 @@ func deadlineBudget(t *testing.T, tune func(*Server), n int) (int32, int32) {
 // not kernel syscalls: Go's setDeadlineImpl hands each one to the runtime
 // poller (runtime_pollSetDeadline) rather than issuing a syscall per call.
 func TestDeadlineCallBudget(t *testing.T) {
-	// Every timeout zero (New()'s zero value, and the benchmark's server):
-	// the socket's deadlines are cleared from the fd's first instant, so a
-	// keep-alive request must not touch them at all.
-	if r, w := deadlineBudget(t, nil, 3); r != 0 || w != 0 {
-		t.Fatalf("zero-timeout server touched deadlines: read=%d write=%d", r, w)
+	// Every timeout zero: each sequential request must interrupt and join its
+	// disconnect read, then clear that deadline (two read calls per request).
+	if r, w := deadlineBudget(t, nil, 3); r != 6 || w != 0 {
+		t.Fatalf("zero-timeout server deadline calls: read=%d (want 6) write=%d (want 0)", r, w)
 	}
 	// Every timeout set with ReadHeaderTimeout == ReadTimeout (front's
 	// wiring): per request the idle deadline and the header deadline are
@@ -549,15 +548,15 @@ func TestDeadlineCallBudget(t *testing.T) {
 	// so net/http's Equal guard skips it, and the write deadline is armed
 	// then cleared (2 writes). The first request has no idle wait, and the
 	// last read armed is the idle deadline the loop blocks on for a next
-	// request that never comes: 2 reads per request overall. Before the
-	// mirror this shape cost 9 reads (a third, redundant whole-request arm
-	// per keep-alive request) and the same 6 writes.
+	// request that never comes. Body EOF also clears the read deadline before
+	// observation, and stopping observation arms/clears the interrupt: five
+	// read calls per request overall, with the same two write calls.
 	if r, w := deadlineBudget(t, func(s *Server) {
 		s.IdleTimeout = time.Hour
 		s.ReadTimeout = 30 * time.Second
 		s.ReadHeaderTimeout = 30 * time.Second
 		s.WriteTimeout = 30 * time.Second
-	}, 3); r != 6 || w != 6 {
-		t.Fatalf("armed-timeout server deadline calls: read=%d (want 6) write=%d (want 6)", r, w)
+	}, 3); r != 15 || w != 6 {
+		t.Fatalf("armed-timeout server deadline calls: read=%d (want 15) write=%d (want 6)", r, w)
 	}
 }

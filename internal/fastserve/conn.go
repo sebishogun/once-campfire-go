@@ -22,8 +22,9 @@ type conn struct {
 	srv *Server
 	rwc net.Conn
 
-	pr prefixReader
-	br *bufio.Reader
+	pr       prefixReader
+	br       *bufio.Reader
+	observer disconnectReader
 
 	// head accumulates the current request head; parsed.Header aliases it.
 	head        []byte
@@ -85,8 +86,9 @@ type conn struct {
 // is reused (the drain guarantees the body is consumed before the next
 // request starts).
 type prefixReader struct {
-	rwc     net.Conn
-	pending []byte
+	rwc      net.Conn
+	pending  []byte
+	observer *disconnectReader
 }
 
 func (p *prefixReader) Read(dst []byte) (int, error) {
@@ -98,7 +100,19 @@ func (p *prefixReader) Read(dst []byte) (int, error) {
 		}
 		return n, nil
 	}
-	return p.rwc.Read(dst)
+	if p.observer != nil && p.observer.hasByte {
+		if len(dst) == 0 {
+			return 0, nil
+		}
+		dst[0] = p.observer.byte[0]
+		p.observer.hasByte = false
+		return 1, nil
+	}
+	n, err := p.rwc.Read(dst)
+	if err != nil && p.observer != nil && p.observer.cancel != nil {
+		p.observer.cancel()
+	}
+	return n, err
 }
 
 func newConn(s *Server, rwc net.Conn) *conn {
@@ -107,6 +121,8 @@ func newConn(s *Server, rwc net.Conn) *conn {
 	// field comment for the precondition a wrapped listener must meet.
 	c := &conn{srv: s, rwc: rwc}
 	c.pr.rwc = rwc
+	c.pr.observer = &c.observer
+	c.observer.c = c
 	c.br = bufio.NewReaderSize(&c.pr, 4096)
 	// RemoteAddr().String() pays a JoinHostPort allocation; net/http caches
 	// the address once per connection (conn.serve), so do the same.
@@ -153,6 +169,7 @@ func (c *conn) setWriteDeadline(t time.Time) {
 // serve runs the keep-alive request loop for one connection.
 func (c *conn) serve() {
 	defer c.srv.connDone(c)
+	defer c.observer.close()
 	defer func() {
 		if !c.handedOff {
 			c.rwc.Close() // handed-off conns are owned by the handoff server
@@ -392,6 +409,8 @@ func (c *conn) serveRequest() bool {
 	// request never leaves an uncancelled child on the background context.
 	reqCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	c.observer.cancel = cancel
+	defer func() { c.observer.stop(); c.observer.cancel = nil }()
 	req, err := c.newRequest(&c.req, c.br, reqCtx)
 	if err != nil {
 		c.reject("HTTP/1.1 400 Bad Request", "400 Bad Request")
@@ -424,8 +443,13 @@ func (c *conn) serveRequest() bool {
 		return false
 	}
 
+	if req.Body == http.NoBody || req.ContentLength == 0 {
+		c.observer.start()
+	}
 	c.srv.serveHandler(res, req)
 	cancel() // net/http cancels the request context right after ServeHTTP
+	c.observer.stop()
+	c.observer.cancel = nil // body draining must not start another observer
 	c.resp = nil
 	if err := res.finish(); err != nil {
 		return false
