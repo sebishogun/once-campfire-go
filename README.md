@@ -373,10 +373,11 @@ net/http server). `CAMPFIRE_SERVER_LOOP` (default `on`; accepts `on`/`true`/`1` 
 rolls that listener back to net/http with `off`. The public listeners never use the owned loop. Its
 deliberate HTTP differences from net/http and its verification limits are recorded in
 `plans/engine-41.md`; the ENGINE-53 measurement that made it the default is in the same file.
-Known owned-loop limitation: a client disconnect does not cancel a request context while its
-handler is still running, including after consuming the request body. Use
-`CAMPFIRE_SERVER_LOOP=off` when handlers depend on disconnect cancellation. The wire fixes and
-remaining reader-lifecycle work are recorded in `plans/fastserve-wire-fixes.md`.
+The owned loop observes disconnects after request-body completion and cancels the active request
+context. Its one-byte background reader preserves pipelining and is interrupted/joined before
+response finalization. As in net/http, a successfully observed pipeline byte stops observation
+until that byte is consumed; unread bodies are not read concurrently with the handler.
+The wire fixes and reader lifecycle are recorded in `plans/fastserve-wire-fixes.md`.
 The recorded-response path sets the negotiated `Content-Encoding` in the header map before emission
 even on the precomposed-framed path (where the map never reaches the wire), so the front middleware
 passes a pre-encoded body through instead of starting its own gzip member after it — a lone gzip

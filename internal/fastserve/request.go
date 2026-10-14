@@ -106,7 +106,11 @@ func (c *conn) newRequest(parsed *http1.Request, br *bufio.Reader, ctx context.C
 		req.Body = http.NoBody
 		return req, nil
 	}
-	req.Body = http1.NewBodyReader(br, framing, c.srv.bodyLimits())
+	req.Body = &observedBody{
+		BodyReader: *http1.NewBodyReader(br, framing, c.srv.bodyLimits()),
+		observer:   &c.observer,
+		remaining:  req.ContentLength,
+	}
 	return req, nil
 }
 
