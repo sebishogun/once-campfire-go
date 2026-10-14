@@ -327,10 +327,30 @@ e.g. `200`, or `off` to disable the collector) and `CAMPFIRE_GOMEMLIMIT` (a soft
 bytes, e.g. `536870912`, or with a binary `MiB`/`GiB` suffix, e.g. `512MiB`), both applied at
 startup and logged with the effective values. An absent knob leaves the runtime's own behavior
 alone — Go already reads `GOGC` and `GOMEMLIMIT` from the environment itself — and an invalid
-value logs a warning and keeps the runtime setting. Read profiles show GC at roughly 9–12% of
-samples on read routes; the task is to drive that share down without raising peak memory, and the
-defaults the shipped image lands on are recorded with the ENGINE-47 measurement (this text stays
-knob documentation until that evidence exists).
+value logs a warning and keeps the runtime setting. The shipped image sets `CAMPFIRE_GOGC=200`
+(ENGINE-47): on the harness read workload, with aligned-window per-request accounting, it halves
+GC CPU per request (median 1.65 → 0.84 µs) and cuts total CPU per request by 4.9% (23.84 →
+22.66 µs; pooled paired ratio 0.957 over 64 pairs, against an identically configured noise-floor
+arm at 1.001), at the cost of a higher peak RSS (median 74 → 87 MiB). `CAMPFIRE_GOGC=100` rolls
+the default back. No `CAMPFIRE_GOMEMLIMIT` is shipped: a 256 MiB limit was measured as
+non-binding and indistinguishable from no limit at that peak. `bench/gc-policy` reproduces the
+measurement; `bench/results/gc-policy-opt-runtime/README.md` records it, the warmup check that
+validates the accounting (`bench/results/gc-policy-warmup-check/`), and the separate PGO on/off
+measurement (`bench/results/pgo-on-off/`), where no PGO benefit was detectable on this workload.
+
+The build is profile-guided: `cmd/campfire/default.pgo`, collected from the production workload
+by `bin/pgo-profile` (the five harness routes through the public front listener), is the PGO
+input for `bin/build` and the image build via `-pgo=auto`; the build falls back to no PGO when
+the file is absent. `cmd/campfire/default.pgo.provenance.json` identifies the binary that was
+profiled from its own `go version -m` build info (revision, build settings), records the
+effective runtime settings from the server's startup log, and pins the checkout's build inputs by
+content with an explicit statement of whether they can stand for that binary. It does not claim
+the profile the binary was built with: `go version -m` names the `-pgo` path and never the
+profile's content, so the file at that path is reported as an unproven candidate, captured before
+a run can overwrite it. **No PGO benefit was measured**: on/off is compared in
+`bench/results/pgo-on-off/` and no difference was detected at that sample size on this host, and
+the committed profile is a bootstrap input (collected from a `-pgo=off` build of the same
+revision). The profile ships as the lever's mechanism, not as a measured speedup.
 
 The public listener uses `HTTP_PORT=80`. Set `TLS_DOMAIN` for automatic ACME certificates and HTTPS
 on `HTTPS_PORT=443`. The internal application listener defaults to `TARGET_BIND=127.0.0.1` and
@@ -411,7 +431,13 @@ HTML, frontend, tests, dependencies and generated files.
 
 [Shared verification](https://github.com/basecamp/once-campfire-verification) · [Detailed results](https://github.com/basecamp/once-campfire-verification/blob/main/docs/performance-review.md).
 
-See [`bench/`](bench/) for benchmark tooling and earlier measurements.
+See [`bench/`](bench/) for benchmark tooling and earlier measurements. The
+runtime levers are measured separately: `bench/gc-policy` runs `CAMPFIRE_GOGC`/
+`CAMPFIRE_GOMEMLIMIT` arms — and, with `--binary NAME=PATH`, PGO builds against
+each other — with aligned-window per-request accounting and an identically
+configured noise-floor arm (`bench/results/gc-policy-opt-runtime/`,
+`gc-policy-warmup-check/`, `pgo-on-off/`), and `bin/pgo-profile` collects the
+build's PGO input (`cmd/campfire/default.pgo`).
 
 
 ## Engine fork results (this machine)
