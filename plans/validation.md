@@ -940,3 +940,37 @@ errors:
 Go is ahead of C on messages, search and post; C keeps a small lead on room
 and sidebar at native tmpfs conditions. Raw:
 `/tmp/opencode/native-bench-20261014-210031/summary.json`.
+
+## Final fix round and verification (2026-10-15, train `1b143bf`)
+
+Fix sets merged after the matched measurement: composition (`c9fd945`),
+wire/transport (`bf83649`), durability/cable (`dbc32d8`), early-error
+(`fcf046f`), push progress (`69e12ee`), conditional validators (`2971015`),
+push retry rounds (`0c268f3`). Each carries fail-before/pass-after
+regressions and a green full race suite on its branch.
+
+Six independent reviews ran on the frozen trees (`8c471f3`, `76d9395`,
+`6dd2ea2`): correctness/coherency, wire/transport, performance/memory,
+fail-before integrity, raw-wire parity extension, and a runtime conformance
+differential with byte-level probes. Every reported defect was fixed and
+re-verified; the conformance re-run on `1b143bf` reports SHIP-READY with no
+new findings (304 weak matching and validator preservation verified
+byte-for-byte; authorization, encodings, revocation, host/origin and
+transport deltas unchanged).
+
+Gates on `1b143bf`: `bin/check` (race + websocket) EXIT 0; Rust-Go interop
+PASS; production container (image `once-campfire-go:final2`) PASS; screen
+inventory and browser workflows pending.
+
+**Fail-before coverage.** Sixteen regressions were executed against their
+pre-fix parent revisions and failed there — including the composition
+capture-barrier matrix (16/16), host/origin recorded identity, write-failure
+cancellation, failed-body-close reuse, presence revocation, authz FIFO
+clearing, message crash durability (both boundaries), durable wake, rollback
+quarantine, write-failure pipeline termination, empty-flush headers and the
+2048-byte buffer boundary. Twenty-six further regressions cannot compile
+against pre-fix revisions because they reference APIs the fixes introduced
+(outbox, quarantine, disconnect observer, recognition, pooling clears); for
+those the fail-before basis is feature absence plus code inspection, not
+execution against the old tree. An independent auditor flagged this as a
+coverage limitation; it is not a product defect.
