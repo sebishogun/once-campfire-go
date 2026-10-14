@@ -295,38 +295,21 @@ func (s *Server) buildReplayHead(live http.Header, framed []byte, length int, xc
 	return rightSized(block)
 }
 
-// buildReplay304 renders the immutable 304 replay block. The recorded flavor
-// is the head lane's own 304 (Cache-Control: no-cache, the response's content
-// coding and the security headers). The validator flavor is the head the
-// route's validator emits before rendering: its cache-control and ETag, then
-// the security headers. The front's X-Cache marker is baked in like the 200
-// block's.
+// buildReplay304 renders the immutable 304 replay block for the recorded
+// flavor: the head lane's own 304 (Cache-Control: no-cache, the response's
+// content coding and the security headers), with the front's X-Cache marker
+// baked in like the 200 block's. The validator flavor does not use a block —
+// its fresh 304 carries no coding, so its hit takes the map path (see
+// serveCached304) — and passes nil.
 func (s *Server) buildReplay304(header http.Header, validator bool, xcache string) []byte {
-	var block []byte
 	if validator {
-		block = s.appendValidator304(nil, header.Get("Cache-Control"), header.Get("ETag"))
-	} else {
-		block = s.appendRecordedHead(nil, nil, "", header.Get("Content-Encoding"), 0, http.StatusNotModified)
+		return nil
 	}
+	block := s.appendRecordedHead(nil, nil, "", header.Get("Content-Encoding"), 0, http.StatusNotModified)
 	if xcache != "" {
 		block = spliceHeadLine(block, "X-Cache", xcache)
 	}
 	return rightSized(block)
-}
-
-// appendValidator304 renders the messages page's validator 304 head: the
-// validator's cache-control and ETag, then the process-constant security
-// headers, in the map path's sorted order. It is the head
-// messageValidator.apply's notModified produces before rendering.
-func (s *Server) appendValidator304(dst []byte, cacheControl, etag string) []byte {
-	dst = append(dst, "Cache-Control: "...)
-	dst = append(dst, cacheControl...)
-	dst = append(dst, '\r', '\n')
-	dst = append(dst, "Etag: "...)
-	dst = append(dst, etag...)
-	dst = append(dst, '\r', '\n')
-	dst = append(dst, "Referrer-Policy: strict-origin-when-cross-origin\r\n"...)
-	return s.appendRecordedSecurity(dst)
 }
 
 // spliceHeadLine inserts one rendered "Name: value\r\n" line into a head block

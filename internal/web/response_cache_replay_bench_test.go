@@ -212,8 +212,15 @@ func BenchmarkResponseCacheReplay(b *testing.B) {
 					if hits1 <= hits0 {
 						b.Fatalf("%s/%s/%s did not hit the response cache (hits %d -> %d, misses %d)", route.name, accept, c.name, hits0, hits1, misses1)
 					}
-					if replays1 <= replays0 {
+					// The messages page composes its fresh 304 on the map path
+					// (its validator answers before rendering), so its 304 does
+					// not take the lane; every other shape does.
+					wantReplay := !(c.conditional && route.name == "messages")
+					if wantReplay && replays1 <= replays0 {
 						b.Fatalf("%s/%s/%s did not take the replay lane (replays %d -> %d)", route.name, accept, c.name, replays0, replays1)
+					}
+					if !wantReplay && replays1 != replays0 {
+						b.Fatalf("%s/%s/%s took the replay lane (replays %d -> %d)", route.name, accept, c.name, replays0, replays1)
 					}
 					b.ReportAllocs()
 					b.ResetTimer()
@@ -277,11 +284,13 @@ func (w *replayProbeWriter) WritePrecomposed(status int, head []byte, parts [][]
 // on the web side: a warm hit's serveCached + finish run against a stub
 // precomposed receiver, for 200, HEAD and 304 in both encodings, and the
 // allocation count is asserted (not just reported). The entry is the one the
-// real admission stored for the messages page through the public chain, so the
-// head block, body and 304 flavor are exactly production's.
+// real admission stored for the search page through the public chain — a
+// recorded-flavor entry, whose 200/HEAD/304 all take the lane (the messages
+// page's 304 is composed on the map path; see serveCached304) — so the head
+// block, body and 304 flavor are exactly production's.
 func BenchmarkResponseCacheReplayHandler(b *testing.B) {
-	app, baseURL, roomID, cookie, _ := benchReplayFixture(b)
-	path := "/rooms/" + roomID + "/messages"
+	app, baseURL, _, cookie, _ := benchReplayFixture(b)
+	path := "/searches?q=benchmarkneedle"
 	client := benchReplayClient(b)
 	for _, accept := range []string{"identity", "gzip"} {
 		// Warm the entry for this encoding: the fixture filled only gzip.
