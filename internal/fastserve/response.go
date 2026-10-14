@@ -168,6 +168,9 @@ func (w *response) WriteHeader(code int) {
 
 // Write implements http.ResponseWriter.
 func (w *response) Write(p []byte) (int, error) {
+	if w.c.writeErr != nil {
+		return 0, w.c.writeErr
+	}
 	if w.canWriteContinue {
 		w.canWriteContinue = false
 	}
@@ -185,15 +188,20 @@ func (w *response) Write(p []byte) (int, error) {
 		w.brokeConn = true
 		return 0, errContentLength
 	}
+	direct := len(w.body) == w.emitted
 	w.body = append(w.body, p...)
-	w.emitIfFull()
+	if err := w.emitIfFull(direct, false); err != nil {
+		return 0, err
+	}
 	return len(p), nil
 }
 
-// WriteString keeps io.WriteString callers on the direct path: the string
-// appends straight into the body buffer, where net/http's bufio layer would
-// absorb it the same way (no intermediate []byte conversion).
+// WriteString appends straight into the body buffer without an intermediate
+// []byte conversion, retaining net/http's string-write chunk boundaries.
 func (w *response) WriteString(s string) (int, error) {
+	if w.c.writeErr != nil {
+		return 0, w.c.writeErr
+	}
 	if w.canWriteContinue {
 		w.canWriteContinue = false
 	}
@@ -212,27 +220,33 @@ func (w *response) WriteString(s string) (int, error) {
 		return 0, errContentLength
 	}
 	w.body = append(w.body, s...)
-	w.emitIfFull()
+	if err := w.emitIfFull(false, true); err != nil {
+		return 0, err
+	}
 	return len(s), nil
 }
 
 // emitIfFull mirrors the 2048-body budget: once the accumulation crosses it,
 // the response is on the wire and, absent a declared Content-Length, in
-// chunked framing. With a declared length the body coalesces into ~32 KiB
-// wire segments (bytes identical at any size); chunked responses emit the
-// whole pending window as one chunk, net/http's write-level granularity, so
-// a small response costs one chunk flush plus the zero chunk.
-func (w *response) emitIfFull() {
-	for len(w.body)-w.emitted >= bufferBeforeChunkingSize {
+// chunked framing. Like bufio.Writer, a byte write to an empty buffer can
+// bypass it; a split write fills the buffer first, and a string write always
+// fills it. An exactly full buffer remains pending until the next write.
+func (w *response) emitIfFull(direct, stringWrite bool) error {
+	for len(w.body)-w.emitted > bufferBeforeChunkingSize {
 		n := len(w.body) - w.emitted
 		if w.contentLength != -1 {
+			// Fixed-length segmentation is invisible on the wire; retain
+			// coalesced writes instead of one syscall per 2 KiB string block.
 			n = min(emissionSize, n)
+		} else if !direct {
+			n = bufferBeforeChunkingSize
 		}
 		if err := w.cw.writeBody(w.body[w.emitted : w.emitted+n]); err != nil {
 			w.brokeConn = true
-			return
+			return err
 		}
 		w.emitted += n
+		direct = !stringWrite
 		if w.emitted == len(w.body) {
 			// The flush consumed everything; reset to the array origin so
 			// the next append (and the connection, after the response)
@@ -241,11 +255,20 @@ func (w *response) emitIfFull() {
 			w.emitted = 0
 		}
 	}
+	return nil
 }
 
 // Flush implements http.Flusher: everything buffered goes to the wire, and
 // the response becomes chunked from here on (net/http parity).
 func (w *response) Flush() {
+	_ = w.FlushError()
+}
+
+// FlushError supports http.ResponseController and reports transport failures.
+func (w *response) FlushError() error {
+	if w.c.writeErr != nil {
+		return w.c.writeErr
+	}
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
@@ -253,7 +276,7 @@ func (w *response) Flush() {
 		n := min(emissionSize, len(w.body)-w.emitted) // the header is composed on this emission
 		if err := w.cw.writeBody(w.body[w.emitted : w.emitted+n]); err != nil {
 			w.brokeConn = true
-			return
+			return err
 		}
 		w.emitted += n
 	}
@@ -263,12 +286,15 @@ func (w *response) Flush() {
 	w.c.bodyBuf = w.body
 	w.body = w.body[:0]
 	w.emitted = 0
-	w.c.flushOut()
+	if !w.cw.wroteHeader {
+		w.cw.writeHeader(nil)
+	}
+	return w.c.flushOut()
 }
 
 // finish runs after the handler returns: emit the composed response, close
 // the chunked framing, and release the request body.
-func (w *response) finish() {
+func (w *response) finish() error {
 	w.handlerDone = true
 	if w.aborted {
 		// Panicked handler: net/http closes the connection without
@@ -276,7 +302,7 @@ func (w *response) finish() {
 		if w.req.Body != nil {
 			w.req.Body.Close()
 		}
-		return
+		return w.c.writeErr
 	}
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
@@ -295,6 +321,7 @@ func (w *response) finish() {
 	if w.req.Body != nil {
 		w.req.Body.Close()
 	}
+	return w.c.writeErr
 }
 
 // nowDate returns the RFC 1123 formatted current time, formatted at most
@@ -321,6 +348,9 @@ func (c *conn) nowDate(now time.Time) []byte {
 // declared from the parts, written is set to match, and the response is never
 // chunked on this path.
 func (w *response) WritePrecomposed(status int, head []byte, body [][]byte) error {
+	if w.c.writeErr != nil {
+		return w.c.writeErr
+	}
 	if w.wroteHeader {
 		return nil
 	}
@@ -387,6 +417,9 @@ func (w *response) WritePrecomposed(status int, head []byte, body [][]byte) erro
 // Connection lines — the front's builder refuses such entries and falls back
 // to the map path.
 func (w *response) WriteRecorded(status int, head []byte, body []byte) error {
+	if w.c.writeErr != nil {
+		return w.c.writeErr
+	}
 	if w.wroteHeader {
 		return nil
 	}
@@ -772,7 +805,7 @@ func (w *response) drainRequestBody() drainVerdict {
 // declared Content-Length the handler under-fulfilled, or a broken write all
 // end the connection.
 func (w *response) shouldKeepAlive() bool {
-	if w.closeAfterReply || w.brokeConn {
+	if w.closeAfterReply || w.brokeConn || w.c.writeErr != nil {
 		return false
 	}
 	if w.req.Method != "HEAD" && w.contentLength != -1 && bodyAllowedForStatus(w.status) && w.contentLength != w.written {

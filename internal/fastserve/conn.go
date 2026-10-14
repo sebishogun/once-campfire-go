@@ -61,8 +61,9 @@ type conn struct {
 	writeArmed bool
 
 	// response side
-	resp *response
-	segs net.Buffers // pending wire segments, flushed with one writev
+	resp     *response
+	writeErr error       // first transport write failure; never cleared on keep-alive
+	segs     net.Buffers // pending wire segments, flushed with one writev
 	// per-connection scratch for response bytes; all aliased segments are
 	// consumed synchronously by flushOut before the next build reuses them.
 	headBuf       []byte
@@ -426,7 +427,9 @@ func (c *conn) serveRequest() bool {
 	c.srv.serveHandler(res, req)
 	cancel() // net/http cancels the request context right after ServeHTTP
 	c.resp = nil
-	res.finish()
+	if err := res.finish(); err != nil {
+		return false
+	}
 	// net/http clears the write deadline after finishRequest; a keep-alive
 	// connection must not carry the previous request's deadline into the
 	// 400/431 tail that reject() may write before the next request arms its
@@ -454,14 +457,30 @@ func (c *conn) maybeWriteContinue() {
 // rawWrite writes b with the active write deadline, bypassing the response
 // segment pipeline (interim responses and rejections).
 func (c *conn) rawWrite(b []byte) error {
-	_, err := c.rwc.Write(b)
-	return err
+	if c.writeErr != nil {
+		return c.writeErr
+	}
+	n, err := c.rwc.Write(b)
+	if err == nil && n != len(b) {
+		err = io.ErrShortWrite
+	}
+	return c.recordWriteError(err)
+}
+
+func (c *conn) recordWriteError(err error) error {
+	if c.writeErr == nil && err != nil {
+		c.writeErr = err
+	}
+	return c.writeErr
 }
 
 // emit adds a wire segment. Segments alias per-connection scratch buffers
 // and the response body buffer; flushOut consumes them synchronously before
 // any alias is rebuilt.
 func (c *conn) emit(b []byte) {
+	if c.writeErr != nil {
+		return
+	}
 	c.segs = append(c.segs, b)
 }
 
@@ -472,13 +491,23 @@ func (c *conn) emit(b []byte) {
 // kept alongside and the list resets to it with full capacity for the next
 // response.
 func (c *conn) flushOut() error {
+	if c.writeErr != nil {
+		return c.writeErr
+	}
 	if len(c.segs) == 0 {
 		return nil
 	}
 	origin := c.segs
-	_, err := c.segs.WriteTo(c.rwc)
+	var want int64
+	for _, p := range origin {
+		want += int64(len(p))
+	}
+	n, err := c.segs.WriteTo(c.rwc)
+	if err == nil && n != want {
+		err = io.ErrShortWrite
+	}
 	c.segs = origin[:0]
-	return err
+	return c.recordWriteError(err)
 }
 
 // newResponse allocates the per-request writer state on top of per-conn

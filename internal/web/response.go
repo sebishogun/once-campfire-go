@@ -154,7 +154,9 @@ func (w *responseBuffer) finish(r *http.Request) {
 		} else {
 			body = w.parts
 		}
-		_ = target.WritePrecomposed(w.recordedStatus, w.recordedHead, body)
+		if err := target.WritePrecomposed(w.recordedStatus, w.recordedHead, body); err != nil {
+			panic(http.ErrAbortHandler)
+		}
 		// A write error means the connection is gone; writing anything
 		// further (the map path would re-negotiate encoding over bytes that
 		// are already encoded) can only corrupt the moot response.
