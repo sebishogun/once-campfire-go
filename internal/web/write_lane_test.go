@@ -127,9 +127,16 @@ func parityPost(t *testing.T, server *httptest.Server, body string, cookie *http
 // direct writes off so the create transaction's seven statements are
 // counted too, checkpoints off the clock, one plain post. The number is
 // part of the contract — the fresh-message view, the reused room record and
-// the in-line lane are what keep it at 12 instead of 17 — so a change must
+// the in-line lane are what keep it at 11 instead of 17 — so a change must
 // update the count consciously. The direct lane's per-post stream is pinned
 // separately, in TestCreateMessageFastWriteStatementCount.
+//
+// The unread bump contributes zero statements here (Lever 5): the posting
+// server has no cable subscriber, so the hub's active-unread index is empty
+// and PublishUnreadBump returns without the per-member
+// `SELECT user_id FROM memberships WHERE room_id=?` read the fan-out used to
+// run for every post. TestMessageCreatedZeroSubscribersStatements pins that
+// directly.
 func TestCreateMessageStatementCount(t *testing.T) {
 	t.Setenv("CAMPFIRE_WRITE_QUEUE", "on")
 	t.Setenv("CAMPFIRE_FASTDB", "off")
@@ -190,12 +197,12 @@ func TestCreateMessageStatementCount(t *testing.T) {
 	if response.StatusCode != 406 {
 		t.Fatalf("post status %d body=%s, want 406-by-negotiation", response.StatusCode, data)
 	}
-	// 12 request statements. The PRAGMA data_version generation observation
+	// 11 request statements. The PRAGMA data_version generation observation
 	// (one read per request, adopted from upstream ef00d84) runs on a direct
 	// cgo handle, not through database/sql, so it does not appear in this
 	// statement count.
-	if got := count(); got != 12 {
-		t.Fatalf("POST /messages statements = %d, want 12\n%s", got, dump())
+	if got := count(); got != 11 {
+		t.Fatalf("POST /messages statements = %d, want 11\n%s", got, dump())
 	}
 }
 
@@ -203,7 +210,7 @@ func TestCreateMessageStatementCount(t *testing.T) {
 // POST /messages with the direct write lane on (the ENGINE-55 default): the
 // create transaction's seven statements run as prepared statements on the
 // fastdb connection, invisible to the counting driver, so the same request
-// counts exactly 12−7 = 5 (the view statements; the write-side statements
+// counts exactly 11−7 = 4 (the view statements; the write-side statements
 // are pinned by text and order in the database package's
 // TestFastWriteStatementStream, which records the direct lane's stream). The
 // message still persists with its search row, so the count cut is not a
@@ -265,10 +272,10 @@ func TestCreateMessageFastWriteStatementCount(t *testing.T) {
 	if response.StatusCode != 406 {
 		t.Fatalf("post status %d body=%s, want 406-by-negotiation", response.StatusCode, data)
 	}
-	// 5 request statements (the generation observation is a direct cgo
+	// 4 request statements (the generation observation is a direct cgo
 	// handle read and is not counted; see TestCreateMessageStatementCount).
-	if got := count(); got != 5 {
-		t.Fatalf("direct-lane POST /messages statements = %d, want 5", got)
+	if got := count(); got != 4 {
+		t.Fatalf("direct-lane POST /messages statements = %d, want 4", got)
 	}
 	hits, err := db.Search(ctx, user.ID, "lane")
 	if err != nil || len(hits) != 1 {

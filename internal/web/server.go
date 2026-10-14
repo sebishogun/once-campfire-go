@@ -1204,12 +1204,17 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request, u databas
 	}
 	b.WriteString(`</template></turbo-stream>`)
 	markup := b.String()
-	// Delivery follows commit and outlives a disconnected posting request.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	s.Cable.Publish(ctx, m.RoomID, markup)
-	cancel()
-	s.messageCreated(m, room, richMentions(rich))
-	s.enqueueWebhooks(m, room, richMentions(rich))
+	// Delivery follows commit and outlives a disconnected posting request. One
+	// budget covers the whole post-commit delivery step — the room broadcast,
+	// the unread bumps and the webhook enqueue — instead of a separate
+	// five-second context per step (Lever 5); every part stays bounded, and
+	// the push and webhook deliveries run later on the job workers.
+	deliveryCtx, cancelDelivery := context.WithTimeout(context.Background(), deliveryTimeout)
+	defer cancelDelivery()
+	s.Cable.Publish(deliveryCtx, m.RoomID, markup)
+	mentions := richMentions(rich)
+	s.messageCreated(deliveryCtx, m, room, mentions)
+	s.enqueueWebhooks(deliveryCtx, m, room, mentions)
 	if respondFormat(w, r, "turbo_stream") != "" {
 		writeStream(w, markup)
 	}

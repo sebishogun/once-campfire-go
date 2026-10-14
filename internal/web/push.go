@@ -194,20 +194,15 @@ func (s *Server) testPushNotification(w http.ResponseWriter, r *http.Request, u 
 // messageCreated broadcasts the unread bumps and schedules push deliveries
 // for a created message. mentioned carries the mentioned user ids the create
 // path already derived from the body's single parse (ENGINE-45b); nil means
-// "derive here", which the bot and webhook callers rely on.
-func (s *Server) messageCreated(message database.Message, room database.Room, mentioned []int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	members, err := s.DB.RoomMemberIDs(ctx, room.ID)
-	if err != nil {
+// "derive here", which the bot and webhook callers rely on. ctx bounds the
+// delivery work — the caller owns that budget (Lever 5: the posting request
+// opens one for the whole post-commit step instead of one per step).
+func (s *Server) messageCreated(ctx context.Context, message database.Message, room database.Room, mentioned []int64) {
+	// The unread bump targets the hub's ACTIVE unread subscriptions, so a post
+	// whose room has nobody subscribed costs no member query, no payload map
+	// and no per-member stream name (Lever 5).
+	if err := s.Cable.PublishUnreadBump(ctx, room.ID); err != nil {
 		slog.Error("unread notification failed", "error", err)
-	} else {
-		// The payload is shared across members: json.Marshal and the frame
-		// cache only read it, so one map serves the whole loop.
-		payload := map[string]any{"roomId": room.ID}
-		for _, id := range members {
-			s.Cable.PublishStream(ctx, fmt.Sprintf("user_%d_unreads", id), payload)
-		}
 	}
 	// Web Push is the reference's Room::PushMessageJob (the Rails app's
 	// push_message_job.rb): recipients, badge counts and delivery run on the
@@ -218,14 +213,22 @@ func (s *Server) messageCreated(message database.Message, room database.Room, me
 	if s.Push.VAPID == nil {
 		return
 	}
-	s.Jobs.Enqueue("push", func(ctx context.Context) error {
-		return s.deliverPush(ctx, message, room, mentioned)
+	s.Jobs.Enqueue("push", func(jobCtx context.Context) error {
+		return s.deliverPush(jobCtx, message, room, mentioned)
 	})
 }
 
 // pushRequestTimeout bounds one push job's queries and delivery attempts, the
 // same budget the inline path gave the whole chain.
 const pushRequestTimeout = 5 * time.Second
+
+// deliveryTimeout bounds a posting request's whole post-commit delivery step:
+// the room broadcast, the unread bumps and the webhook enqueue. The reference
+// runs all three inline after commit, and one budget for the step replaces the
+// three independent five-second contexts the handler chain used to open
+// (Lever 5) — the step stays bounded, and the push and webhook deliveries
+// themselves run later on the job workers under their own bounds.
+const deliveryTimeout = 5 * time.Second
 
 // deliverPush is the moved Room::PushMessageJob: the recipient query, the
 // per-subscriber badge and payload, and the delivery attempts, all after the

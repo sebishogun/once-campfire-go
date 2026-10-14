@@ -553,3 +553,43 @@ func (d *DB) AuthorizedSessions(
 	}
 	return result, rows.Err()
 }
+
+// RoomSessionAccess is one row of RoomSessionMembers: the user a live session
+// belongs to and whether that user is a member of the queried room.
+type RoomSessionAccess struct {
+	UserID int64
+	Member bool
+}
+
+// RoomSessionMembers resolves a publication's sessions against one room in a
+// single snapshot, like AuthorizedSessions, but keeps the two facts apart:
+// every token with a live session for a non-banned user is returned with that
+// user's id and whether the user is a member of room. A token absent from the
+// result has no live authorized session (revoked, deleted, or a banned user).
+// Callers that must tell "revoked" from "not a member of this room" — the
+// unread bump, which stops the former and merely skips the latter — get both
+// answers from one query instead of a membership read plus an authorization
+// read.
+func (d *DB) RoomSessionMembers(ctx context.Context, tokens []string, room int64) (map[string]RoomSessionAccess, error) {
+	raw, err := json.Marshal(tokens)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.Read.QueryContext(ctx,
+		"SELECT s.token,s.user_id,EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=s.user_id AND m.room_id=?) FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.status=0 AND s.token IN (SELECT value FROM json_each(?))",
+		room, string(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]RoomSessionAccess, len(tokens))
+	for rows.Next() {
+		var token string
+		var access RoomSessionAccess
+		if err := rows.Scan(&token, &access.UserID, &access.Member); err != nil {
+			return nil, err
+		}
+		result[token] = access
+	}
+	return result, rows.Err()
+}

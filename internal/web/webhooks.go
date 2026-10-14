@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/basecamp/once-campfire-go/internal/database"
 	"github.com/basecamp/once-campfire-go/internal/rails"
@@ -20,10 +19,16 @@ import (
 // enqueueWebhooks queues webhook deliveries to mentioned bots (or every
 // user, for direct rooms). mentioned carries the mentioned user ids the
 // create path already derived from the body's single parse (ENGINE-45b);
-// nil means "derive here".
-func (s *Server) enqueueWebhooks(message database.Message, room database.Room, mentioned []int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+// nil means "derive here". ctx bounds the candidate lookup; the caller owns
+// that budget.
+func (s *Server) enqueueWebhooks(ctx context.Context, message database.Message, room database.Room, mentioned []int64) {
+	// A non-direct room with an empty mention list has no candidate bot. The
+	// create path derived that list from the same body parse and hands it in,
+	// so an empty non-nil list is already the answer: no body re-parse, no
+	// candidate query, no timeout context (Lever 5).
+	if room.Type != "Rooms::Direct" && mentioned != nil && len(mentioned) == 0 {
+		return
+	}
 	var candidates []database.User
 	var err error
 	if room.Type == "Rooms::Direct" {
@@ -148,7 +153,12 @@ func (s *Server) deliverWebhook(ctx context.Context, botID, messageID int64) err
 	if err != nil {
 		return err
 	}
-	s.messageCreated(created, room, nil)
+	// The bot's reply bumps the room's unread streams like any other message.
+	// The job context is the runner's root context, which carries no deadline,
+	// so give the bump its own (the bound the inline path always had).
+	notifyCtx, cancelNotify := context.WithTimeout(ctx, pushRequestTimeout)
+	s.messageCreated(notifyCtx, created, room, nil)
+	cancelNotify()
 	views, err := s.messageViews(ctx, []database.Message{created})
 	if err != nil {
 		return err
