@@ -240,13 +240,17 @@ func open(driver, path string, readers int) (*DB, error) {
 		} else {
 			lane = &sqlLaneConn{db: w}
 		}
-		writer := newMessageWriter(lane, checkpointLimitPages())
+		// One checkpoint at a time: the writer and the background checkpointer
+		// share this gate so a scheduled checkpoint and a WAL restart cannot
+		// refuse each other.
+		gate := &checkpointGate{}
+		writer := newMessageWriter(lane, checkpointLimitPages(), gate)
 		interval := checkpointIntervalMS()
 		if interval <= 0 && writer.limit <= 0 {
 			slog.Warn("CAMPFIRE_CHECKPOINT_MS=0 with CAMPFIRE_CHECKPOINT_PAGES=0 disables WAL checkpoints until shutdown; using 1000 ms")
 			interval = time.Second
 		}
-		checkpoints, err := startCheckpointer(driver, uri+options, path, interval)
+		checkpoints, err := startCheckpointer(driver, uri+options, path, interval, gate)
 		if err != nil {
 			writer.Close()
 			r.Close()

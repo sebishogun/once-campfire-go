@@ -42,12 +42,24 @@ func (c *fastLaneConn) begin(ctx context.Context) (laneTx, error) {
 func (c *fastLaneConn) close() error { return c.conn.Close() }
 
 // walFrames reads the WAL hook the direct connection installed at open: one
-// load of C memory, no statement and no allocation.
+// mutex plus one cgo call, off the commit path.
 func (c *fastLaneConn) walFrames() int64 { return c.conn.WALFrames() }
 
 // backfillRestart runs PASSIVE then RESTART on the direct connection, between
-// transactions, so the next create resets the WAL.
-func (c *fastLaneConn) backfillRestart() error { return c.conn.CheckpointRestart() }
+// transactions, so the next create resets the WAL. It reports whether SQLite
+// completed the restart and bounds its own busy wait.
+func (c *fastLaneConn) backfillRestart() (checkpointOutcome, error) {
+	result, err := c.conn.CheckpointRestart()
+	if err != nil {
+		return checkpointOutcome{attempted: true}, err
+	}
+	return checkpointOutcome{
+		attempted:  true,
+		completed:  result.Completed,
+		frames:     result.WALFrames,
+		backfilled: result.Backfilled,
+	}, nil
+}
 
 type fastLaneTx struct {
 	tx *write.WriteTx

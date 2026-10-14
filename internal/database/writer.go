@@ -64,13 +64,56 @@ type messageWriter struct {
 	closed   bool
 	inflight int
 	busy     bool
-	// limit is the WAL-growth ceiling in frames (CAMPFIRE_CHECKPOINT_PAGES);
-	// 0 disables it. restarts counts the WAL restarts the writer performed,
-	// for telemetry and tests.
-	limit     int64
-	restarts  atomic.Int64
-	telemetry bool
+	// limit is the WAL-growth threshold in frames (CAMPFIRE_CHECKPOINT_PAGES);
+	// 0 disables it. gate serializes a restart with the background
+	// checkpointer (SQLite allows one checkpoint at a time, and a RESTART that
+	// arrives while another checkpoint holds the lock is refused).
+	//
+	// The counters are the telemetry. restartAttempts counts attempts that ran
+	// the pragmas; restarts counts those SQLite completed (it reset the WAL);
+	// restartIncomplete counts those it refused, reported in the pragma's
+	// result row; restartDeferred counts checks skipped because the
+	// checkpointer held the gate or the backoff window had not elapsed.
+	// restartStallNanos/restartStallMax measure the time the writer spent
+	// inside an attempt, which is the writer stall the ceiling can cause.
+	limit             int64
+	gate              *checkpointGate
+	restartAttempts   atomic.Int64
+	restarts          atomic.Int64
+	restartIncomplete atomic.Int64
+	restartDeferred   atomic.Int64
+	restartStallNanos atomic.Int64
+	restartStallMax   atomic.Int64
+	// restartAfter and restartBackoff are the incomplete-attempt backoff. They
+	// are plain fields because walLimit runs only under the writer's busy
+	// protocol (the loop or the single in-line claim), never concurrently.
+	restartAfter   time.Time
+	restartBackoff time.Duration
+	telemetry      bool
 }
+
+// Backoff between restart attempts after SQLite refuses one. A refused restart
+// means a reader is still pinning frames; retrying immediately only stalls the
+// writer again, so attempts are spaced out, doubling to the cap. The attempt
+// itself is bounded by write.CheckpointBusyMS, so a pinned reader can hold the
+// writer for at most that long per attempt, at most once per backoff window.
+const (
+	restartBackoffMin = 25 * time.Millisecond
+	restartBackoffMax = 2 * time.Second
+)
+
+// checkpointGate serializes WAL checkpoints between the write lane and the
+// background checkpointer. SQLite runs one checkpoint at a time: a RESTART
+// that arrives while the checkpointer holds the lock is refused (reported busy
+// in its result row), which would look like a pinned reader. The writer
+// TryLocks so it never queues behind a scheduled checkpoint — it defers to the
+// next drain instead — while the checkpointer Locks, so its checkpoint waits
+// for a bounded writer restart rather than being refused.
+type checkpointGate struct{ mu sync.Mutex }
+
+func (g *checkpointGate) try() bool { return g.mu.TryLock() }
+func (g *checkpointGate) lock()     { g.mu.Lock() }
+func (g *checkpointGate) unlock()   { g.mu.Unlock() }
 
 type messageJob struct {
 	ctx   context.Context
@@ -87,7 +130,7 @@ type messageResult struct {
 	inline bool
 }
 
-func newMessageWriter(conn laneConn, limit int64) *messageWriter {
+func newMessageWriter(conn laneConn, limit int64, gate *checkpointGate) *messageWriter {
 	w := &messageWriter{
 		conn:      conn,
 		jobs:      make(chan *messageJob, writeQueueCapacity),
@@ -95,20 +138,31 @@ func newMessageWriter(conn laneConn, limit int64) *messageWriter {
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
 		limit:     limit,
+		gate:      gate,
 		telemetry: checkpointTelemetry(),
 	}
 	go w.loop()
 	return w
 }
 
-// walLimit is the writer's WAL-growth ceiling (the Rust port's WAL_LIMIT_PAGES
-// and its writer-side restart_wal, without the per-message hop): once the WAL
-// has grown to limit frames, the writer backfills and restarts it between jobs
-// so the next commit resets the WAL to its first frame. The frame count comes
-// from the lane's WAL hook — the fastdb lane reads one C-memory word — so the
-// check runs once per drain, not per message and not per statement, and does
-// nothing at all when the ceiling is disabled or the WAL is below it. The
-// database/sql lane, which has no hook, probes with a throttled NOOP pragma.
+// walLimit is the writer's WAL-growth threshold (the Rust port's
+// WAL_LIMIT_PAGES and its writer-side restart_wal, without the per-message
+// hop): once the WAL has grown to limit frames, the writer backfills and
+// restarts it between jobs so the next commit resets the WAL to its first
+// frame. The frame count comes from the lane's WAL hook — the fastdb lane
+// takes its mutex and makes one cgo call — so the check runs once per drain,
+// not per message and not per statement, and does nothing at all when the
+// threshold is disabled or the WAL is below it. The database/sql lane, which
+// has no hook, probes with a throttled NOOP pragma.
+//
+// The threshold is a threshold, not a bound: the check runs after a drain, so
+// a batch (or a run of drains) can overshoot it by whatever it wrote between
+// checks, a single large message can add many frames at once, and a foreign
+// writer's commits are invisible to this connection's hook. There is no
+// backpressure: the writer never refuses or delays a write to stay under the
+// threshold. What it does bound is steady-state growth, and — because the
+// attempt's result row is read and its wait is bounded — the stall a refused
+// restart can cause.
 func (w *messageWriter) walLimit() {
 	if w.limit <= 0 {
 		return
@@ -117,14 +171,62 @@ func (w *messageWriter) walLimit() {
 	if frames < w.limit {
 		return
 	}
-	if err := w.conn.backfillRestart(); err != nil {
+	if !w.restartAfter.IsZero() && time.Now().Before(w.restartAfter) {
+		w.restartDeferred.Add(1)
+		return
+	}
+	if w.gate != nil {
+		if !w.gate.try() {
+			w.restartDeferred.Add(1)
+			return
+		}
+		defer w.gate.unlock()
+	}
+	start := time.Now()
+	outcome, err := w.conn.backfillRestart()
+	stall := time.Since(start)
+	w.restartAttempts.Add(1)
+	w.restartStallNanos.Add(stall.Nanoseconds())
+	updateMax(&w.restartStallMax, stall.Nanoseconds())
+	if err != nil {
 		slog.Warn("WAL checkpoint restart failed", "error", err)
+		w.backoffRestart()
+		return
+	}
+	if !outcome.completed {
+		// SQLite refused the restart: a reader is still pinning frames (or
+		// another checkpoint won the lock). The WAL is not reset and the next
+		// commit will not restart it either, so space the next attempt out
+		// instead of stalling the writer again immediately.
+		w.restartIncomplete.Add(1)
+		w.backoffRestart()
+		if w.telemetry {
+			slog.Info("wal restart incomplete",
+				"frames", outcome.frames, "backfilled", outcome.backfilled,
+				"limit", w.limit, "stall_us", stall.Microseconds(), "backoff_ms", w.restartBackoff.Milliseconds())
+		}
 		return
 	}
 	w.restarts.Add(1)
+	w.restartBackoff = 0
+	w.restartAfter = time.Time{}
 	if w.telemetry {
-		slog.Info("wal restart", "frames", frames, "limit", w.limit)
+		slog.Info("wal restart", "frames", frames, "limit", w.limit, "stall_us", stall.Microseconds())
 	}
+}
+
+// backoffRestart arms the window before the next restart attempt after a
+// refused one, doubling the previous window up to the cap.
+func (w *messageWriter) backoffRestart() {
+	if w.restartBackoff == 0 {
+		w.restartBackoff = restartBackoffMin
+	} else if w.restartBackoff < restartBackoffMax {
+		w.restartBackoff *= 2
+		if w.restartBackoff > restartBackoffMax {
+			w.restartBackoff = restartBackoffMax
+		}
+	}
+	w.restartAfter = time.Now().Add(w.restartBackoff)
 }
 
 func (w *messageWriter) submit(job *messageJob) error {
@@ -184,7 +286,14 @@ func (w *messageWriter) Close() {
 		close(w.stop)
 		<-w.done
 		if w.telemetry {
-			slog.Info("wal restart summary", "restarts", w.restarts.Load(), "limit", w.limit)
+			slog.Info("wal restart summary",
+				"attempts", w.restartAttempts.Load(),
+				"completed", w.restarts.Load(),
+				"incomplete", w.restartIncomplete.Load(),
+				"deferred", w.restartDeferred.Load(),
+				"stall_ms", w.restartStallNanos.Load()/int64(time.Millisecond),
+				"stall_max_ms", w.restartStallMax.Load()/int64(time.Millisecond),
+				"limit", w.limit)
 		}
 	})
 }
@@ -436,9 +545,14 @@ type checkpointer struct {
 	conn     *sql.DB
 	path     string
 	interval time.Duration
-	stop     chan struct{}
-	done     chan struct{}
-	once     sync.Once
+	// gate is the checkpoint gate shared with the write lane: SQLite runs one
+	// checkpoint at a time, and a checkpoint that arrives while another holds
+	// the lock is refused. The checkpointer Locks (its scheduled checkpoint
+	// waits for a bounded writer restart); the writer TryLocks.
+	gate *checkpointGate
+	stop chan struct{}
+	done chan struct{}
+	once sync.Once
 	// telemetry gates the per-checkpoint log line (CAMPFIRE_CHECKPOINT_TELEMETRY);
 	// the counters themselves are always kept, and cost one store per checkpoint.
 	telemetry bool
@@ -544,7 +658,7 @@ func walFileBytes(path string) int64 {
 	return 0
 }
 
-func startCheckpointer(driver, dsn, path string, interval time.Duration) (*checkpointer, error) {
+func startCheckpointer(driver, dsn, path string, interval time.Duration, gate *checkpointGate) (*checkpointer, error) {
 	conn, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, err
@@ -559,6 +673,7 @@ func startCheckpointer(driver, dsn, path string, interval time.Duration) (*check
 		conn:      conn,
 		path:      path,
 		interval:  interval,
+		gate:      gate,
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
 		telemetry: checkpointTelemetry(),
@@ -589,6 +704,13 @@ func (c *checkpointer) loop() {
 }
 
 func (c *checkpointer) passive() {
+	// One checkpoint at a time: the gate keeps this from being refused by a
+	// write-lane restart (and vice versa). The writer TryLocks, so it never
+	// queues here; this Lock waits at most one bounded restart attempt.
+	if c.gate != nil {
+		c.gate.lock()
+		defer c.gate.unlock()
+	}
 	start := time.Now()
 	previous := c.stats.lastUnixNano.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

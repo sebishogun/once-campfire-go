@@ -50,8 +50,10 @@ func TestWALHookTracksCommits(t *testing.T) {
 	// The restart resets the WAL, so the next commit reports a small count
 	// again; the file itself is not truncated (journal_size_limit stays -1),
 	// only its write position moves back to the first frame.
-	if err := conn.CheckpointRestart(); err != nil {
+	if result, err := conn.CheckpointRestart(); err != nil {
 		t.Fatal(err)
+	} else if !result.Completed {
+		t.Fatalf("CheckpointRestart reported incomplete with no reader pinning: %+v", result)
 	}
 	insert(1)
 	if after := conn.WALFrames(); after >= first {

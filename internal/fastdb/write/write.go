@@ -41,6 +41,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/basecamp/once-campfire-go/internal/fastdb/csqlite"
@@ -131,7 +132,7 @@ func OpenWriter(path string, maxStatements int) (*WriteConn, error) {
 	}
 	conn := &WriteConn{db: db, limit: maxStatements, stmts: make(map[string]*csqlite.Stmt, maxStatements)}
 	for _, pragma := range [...]string{
-		"PRAGMA busy_timeout = 5000;",
+		stmtRestoreBusy + ";",
 		"PRAGMA foreign_keys = 1;",
 		"PRAGMA journal_mode = WAL;",
 		"PRAGMA synchronous = NORMAL;",
@@ -152,8 +153,14 @@ func OpenWriter(path string, maxStatements int) (*WriteConn, error) {
 }
 
 // WALFrames returns the WAL frame count as of this connection's most recent
-// commit (Lever 4). The read is one load of the hook's counter: no statement,
-// no allocation, safe to call from the writer's drain path.
+// commit (Lever 4). It is not a plain load: it takes the connection's Go mutex
+// (so a concurrent Close cannot free the counter under it) and makes one cgo
+// call to read the C word the hook wrote. It runs once per write-lane drain,
+// off the commit path and off every request's critical section; the mutex is
+// uncontended there because the lane serializes transactions. The read is
+// exact for this connection's own commits and never older than the last commit
+// by any writer on the same WAL, because the WAL frame count is shared — but a
+// foreign writer's commits are invisible until this connection commits again.
 func (c *WriteConn) WALFrames() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -163,24 +170,114 @@ func (c *WriteConn) WALFrames() int64 {
 	return c.db.WALFrames()
 }
 
+// CheckpointResult is one WAL restart attempt's outcome. Completed is false
+// when SQLite reported the checkpoint incomplete in its result row — the
+// pragma reports a refused or partial checkpoint in the (busy, log,
+// checkpointed) columns rather than as an execution error, which is what
+// happens while a reader still pins frames.
+type CheckpointResult struct {
+	Completed  bool
+	WALFrames  int64
+	Backfilled int64
+}
+
+// CheckpointBusyMS bounds the busy timeout the restart attempt runs with, so a
+// pinned reader can stall the writer for at most this long per attempt instead
+// of the connection's normal 5000 ms. The caller spaces attempts out
+// (backoff), so a long reader cannot stall the writer repeatedly.
+const CheckpointBusyMS = 250
+
+// BusyTimeoutMS is the write connections' normal busy timeout (OpenWriter
+// applies it; the write DSN sets the same value). The restart attempt restores
+// it after bounding its own wait.
+const BusyTimeoutMS = 5000
+
+// The busy-timeout statements are prebuilt: the statement cache is keyed by
+// text, so formatting per attempt would allocate and miss the cache.
+var (
+	stmtCheckpointBusy = "PRAGMA busy_timeout = " + strconv.Itoa(CheckpointBusyMS)
+	stmtRestoreBusy    = "PRAGMA busy_timeout = " + strconv.Itoa(BusyTimeoutMS)
+)
+
 // CheckpointRestart backfills the WAL with a PASSIVE checkpoint and then
 // restarts it with RESTART, on this connection and between transactions (the
 // caller must hold no transaction). It is the writer's WAL-growth limit: the
 // writer owns the connection, so its RESTART is not refused by another
-// connection's checkpoint, and the next write on this connection resets the
+// connection's checkpoint (the database layer also gates the background
+// checkpointer against it), and the next write on this connection resets the
 // WAL to its first frame. Both pragmas are no-ops when the WAL is empty.
-func (c *WriteConn) CheckpointRestart() error {
+//
+// The RESTART's result row is read, so an incomplete checkpoint (a reader
+// still pinning frames, or another checkpoint holding the lock) is reported as
+// Completed=false rather than as success. The attempt runs with a bounded busy
+// timeout (CheckpointBusyMS) and restores the normal one, so a pinned reader
+// cannot stall the writer for the full 5000 ms.
+func (c *WriteConn) CheckpointRestart() (CheckpointResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, pragma := range [...]string{
-		"PRAGMA wal_checkpoint(PASSIVE)",
-		"PRAGMA wal_checkpoint(RESTART)",
-	} {
-		if err := c.execLocked(pragma); err != nil {
-			return err
-		}
+	if c.db == nil {
+		return CheckpointResult{}, ErrWriterClosed
 	}
-	return nil
+	if err := c.execLocked(stmtCheckpointBusy); err != nil {
+		return CheckpointResult{}, err
+	}
+	result, err := c.checkpointRestartLocked()
+	if restoreErr := c.execLocked(stmtRestoreBusy); restoreErr != nil && err == nil {
+		err = restoreErr
+	}
+	return result, err
+}
+
+func (c *WriteConn) checkpointRestartLocked() (CheckpointResult, error) {
+	// PASSIVE backfills every frame no reader is pinning. Its row is not
+	// needed; the RESTART's row reports the outcome.
+	if err := c.execLocked("PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+		return CheckpointResult{}, err
+	}
+	busy, log, checked, err := c.checkpointRowLocked("PRAGMA wal_checkpoint(RESTART)")
+	if err != nil {
+		return CheckpointResult{}, err
+	}
+	return CheckpointResult{Completed: busy == 0, WALFrames: log, Backfilled: checked}, nil
+}
+
+// checkpointRowLocked runs a PRAGMA wal_checkpoint statement and reads its
+// (busy, log, checkpointed) row, so the caller can tell a completed checkpoint
+// from one SQLite refused. The statement is cached by text like every other.
+func (c *WriteConn) checkpointRowLocked(query string) (busy, log, checked int64, err error) {
+	c.recordLocked(query)
+	st, err := c.acquireLocked(query)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer st.Reset()
+	row, err := st.Step()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if !row {
+		return 0, 0, 0, errors.New("fastdb: wal_checkpoint returned no row")
+	}
+	if busy, err = checkpointColumnInt64(st, 0); err != nil {
+		return 0, 0, 0, err
+	}
+	if log, err = checkpointColumnInt64(st, 1); err != nil {
+		return 0, 0, 0, err
+	}
+	if checked, err = checkpointColumnInt64(st, 2); err != nil {
+		return 0, 0, 0, err
+	}
+	return busy, log, checked, nil
+}
+
+// checkpointColumnInt64 reads one INTEGER column with the same strictness as
+// WriteStmt.Int64: the pragma's columns are integers, so anything else is
+// schema or engine drift rather than a value to coerce.
+func checkpointColumnInt64(st *csqlite.Stmt, i int) (int64, error) {
+	if kind := st.ColumnType(i); kind != kindInteger {
+		return 0, fmt.Errorf("fastdb: column %d is %s, want INTEGER", i, kindName(kind))
+	}
+	return st.ColumnInt64(i), nil
 }
 
 // Close finalizes the cached statements and closes the connection. It is

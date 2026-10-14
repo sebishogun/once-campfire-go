@@ -92,3 +92,43 @@ reference value is kept.
 - The in-process test asserts the bound with the same mechanism
   (`TestWALStaysBoundedUnderSustainedWrites`); the native runs confirm it on
   btrfs with the real server.
+
+## Review fix (2026-10-14): refused restarts and the pinned-reader stall
+
+The first version read only whether the checkpoint pragmas *executed*, not the
+`(busy, log, checkpointed)` row they return. SQLite reports a checkpoint it
+refused in that row, so a reader pinning a WAL read slot produced:
+
+- `CheckpointRestart` returned `nil` after **5.004 s** with the reader still
+  pinned (the connection's full `busy_timeout`), and
+- the writer counted it as a completed restart and retried on the next drain,
+  so the stall repeated: 60 posts took **2 m 50 s**, worst post **5.013 s**,
+  with **35 "successful" restarts** that never reset the WAL (frames reached
+  640, WAL 2.6 MB).
+
+Reproduced on `ab25ea8` with a read transaction held open across sustained
+posts (`worst post with a pinned reader took 5.004435181s, want under 1s`).
+After the fix, the same scenario: 60 posts in **253 ms**, worst post **251 ms**,
+the refused attempt counted as incomplete, and the writer backing off instead of
+retrying immediately.
+
+The fix, in three parts:
+
+1. **Read the result row.** `CheckpointRestart` (and the database/sql lane's
+   equivalent) reads `(busy, log, checkpointed)` and reports
+   `Completed = busy == 0`, so a refused checkpoint is an incomplete attempt,
+   not a restart. Counters: `attempts`, `completed`, `incomplete`, `deferred`,
+   and the worst stall, in the telemetry summary.
+2. **Bound the wait.** The attempt runs with a 250 ms busy timeout and restores
+   the connection's 5000 ms, so a pinned reader cannot stall the writer for
+   seconds per attempt.
+3. **Back off and coordinate.** Refused attempts are spaced by a backoff (25 ms
+   doubling to 2 s), and a checkpoint gate shared with the background
+   checkpointer keeps a scheduled PASSIVE and a writer RESTART from refusing
+   each other (the writer TryLocks and defers, counting the deferral).
+
+Under the normal workload (no pinned readers) the bounded timeout costs
+nothing: the same c=16 runs show **attempts 95/96, completed 95/96,
+incomplete 0**, worst single attempt 18–30 ms, total writer stall ~1 s per 10 s,
+WAL max ~40 MB, and `deferred` 6–16 checks where the checkpointer held the gate.
+Raw: [fix.txt](fix.txt).

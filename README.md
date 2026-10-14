@@ -164,27 +164,45 @@ tests. The sidebar and search-cache version counters move with the shared commit
 (group-commit and per-request), so the write lane never serves a version-keyed cache that hides a
 committed message.
 `CAMPFIRE_CHECKPOINT_PAGES` (default 10000; `0` disables it; a negative or unparseable value warns
-and keeps the default) is the WAL-growth ceiling: the write lane reads the WAL's frame count from
-the writer connection's SQLite WAL hook — one load of C memory, no statement and no per-message cost
-— after each drain, and once the WAL reaches that many frames it runs `PRAGMA wal_checkpoint(PASSIVE)`
+and keeps the default) is the WAL-growth threshold: the write lane reads the WAL's frame count
+after each drain and, once the WAL reaches that many frames, runs `PRAGMA wal_checkpoint(PASSIVE)`
 then `RESTART` on the writer connection between jobs. PASSIVE backfills every frame no reader is
 pinning and RESTART waits for the readers, so the next commit resets the WAL to its first frame and
-the WAL file stops growing at the ceiling. This is the Rust port's `WAL_LIMIT_PAGES` plus its
-writer-side `restart_wal`, without its per-message queue hop; it exists because with only the timed
-PASSIVE checkpoints, a busy post workload grows the WAL file without bound — the reference's own
-measurement showed 2.5–4.6 GB in ten seconds at 4–9 K posts/s, because active readers starve
-SQLite's automatic WAL restart. With the ceiling on, the same workload holds the WAL at ~40 MB
-(`the_wal_stays_bounded_under_sustained_writes` in `internal/database`), at no measured throughput
-cost. `CAMPFIRE_CHECKPOINT_MS=0` disables the timed fallback and leaves the growth ceiling to
-schedule checkpoints; with both `CAMPFIRE_CHECKPOINT_MS=0` and `CAMPFIRE_CHECKPOINT_PAGES=0` the
-fallback is restored to 1000 ms (a warning says so), so a run always checkpoints. The final drain is
-unchanged: `Close` drains the writer, runs one last PASSIVE checkpoint and lets the last connection
-remove the WAL.
+the WAL file stops growing. This is the Rust port's `WAL_LIMIT_PAGES` plus its writer-side
+`restart_wal`, without its per-message queue hop; it exists because with only the timed PASSIVE
+checkpoints, a busy post workload grows the WAL file without bound — measured on the reference seed
+at 4.5–5.2 GB in ten seconds at 8.4 K posts/s, because active readers starve SQLite's automatic WAL
+restart. With the threshold on, the same workload holds the WAL at ~40 MB
+(`TestWALStaysBoundedUnderSustainedWrites` in `internal/database`), at no measured throughput cost.
+The threshold is a threshold, not a hard bound: the check runs after a drain, so a batch (or a run
+of drains) can overshoot it by what it wrote between checks, a single large message can add many
+frames at once, and commits by other writers — sessions, accounts, uploads, another process — are
+invisible to the write connection's WAL hook until it commits again (the database/sql lane's probe
+is throttled to 5 ms, so its check can lag by that much of writes). There is no backpressure: the
+writer never refuses or delays a write to stay under the threshold. What is bounded is steady-state
+growth and the stall a refused restart can cause: the RESTART's result row is read, so a checkpoint
+SQLite refused (a reader still pinning frames, or another checkpoint holding the lock) is counted
+as an incomplete attempt rather than as a restart, the attempt runs with a 250 ms busy timeout
+instead of the connection's 5000 ms, and refused attempts are spaced by a backoff (25 ms doubling
+to 2 s). A checkpoint gate shared with the background checkpointer keeps a scheduled PASSIVE and a
+writer restart from refusing each other; the writer defers (and counts the deferral) rather than
+queueing. The writer's counters — attempts, completed, incomplete, deferred, worst stall — are in
+the telemetry summary.
+`CAMPFIRE_CHECKPOINT_MS=0` disables the timed fallback and leaves the growth threshold to schedule
+checkpoints; with both `CAMPFIRE_CHECKPOINT_MS=0` and `CAMPFIRE_CHECKPOINT_PAGES=0` the fallback is
+restored to 1000 ms (a warning says so), so a run always checkpoints. The final drain is unchanged:
+`Close` drains the writer, runs one last PASSIVE checkpoint and lets the last connection remove the
+WAL.
 `CAMPFIRE_CHECKPOINT_TELEMETRY` (default `off`; same value shapes) logs one line per checkpoint —
 WAL frames, frames moved, backlog, busy, duration, time since the last checkpoint and the `-wal`
-file size — and a summary at shutdown, plus one line per WAL restart; the counters behind it are
-always kept (one store per checkpoint) and an in-process snapshot is available to tests. It changes
-no behaviour and is meant for workload runs.
+file size — and a summary at shutdown, plus one line per WAL restart attempt; the counters behind
+it are always kept and an in-process snapshot is available to tests. It changes no behaviour and is
+meant for workload runs. Its cost, with logging off as well as on, is one `time.Now`, a few atomic
+stores and one `os.Stat` of the `-wal` file per checkpoint (once a second at the default interval),
+on the checkpointer's own goroutine. The write lane's frame check is not free either: it runs once
+per drain, takes the lane connection's mutex and makes one cgo call to read the hook's counter (and
+on the database/sql lane, at most one `PRAGMA wal_checkpoint(NOOP)` statement per 5 ms). Neither
+runs on the commit path or per message.
 `CAMPFIRE_FASTDB_WRITE` (default `on`; accepts the same value shapes and warning policy as
 `CAMPFIRE_WRITE_QUEUE`) runs the message create transaction as direct prepared statements on one
 serialized fastdb connection (`internal/fastdb/write` over `internal/fastdb/csqlite`) instead of

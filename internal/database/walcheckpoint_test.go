@@ -2,11 +2,14 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/basecamp/once-campfire-go/internal/fastdb/write"
 )
 
 // walFileSize reports the database's -wal file size (0 when the file is
@@ -170,6 +173,166 @@ func TestCheckpointTelemetryCounters(t *testing.T) {
 	if noop.Noops <= after.Noops {
 		t.Fatalf("no-op checkpoints = %d, want more than %d", noop.Noops, after.Noops)
 	}
+}
+
+// TestWALRestartBoundedUnderPinnedReader is the regression for the
+// refused-restart HIGH: with a read transaction pinning a WAL read slot, the
+// writer's RESTART is refused (reported in the pragma's result row). Before the
+// fix the writer counted it as a completed restart and waited the connection's
+// full 5000 ms busy timeout on every attempt — 60 posts took 2 m 50 s, worst
+// post 5.013 s, with 35 "successful" restarts that never reset the WAL. After
+// the fix the attempt is bounded and reported incomplete, and the writer backs
+// off instead of stalling again.
+func TestWALRestartBoundedUnderPinnedReader(t *testing.T) {
+	runBothLanes(t, func(t *testing.T) {
+		t.Setenv("CAMPFIRE_CHECKPOINT_PAGES", "200")
+		t.Setenv("CAMPFIRE_CHECKPOINT_MS", "3600000") // no background ticks
+		path := filepath.Join(t.TempDir(), "pinned.sqlite3")
+		d, user, room := seedPoster(t, path, 4)
+		defer d.Close()
+		ctx := context.Background()
+		post := func(i int) time.Duration {
+			t.Helper()
+			start := time.Now()
+			if _, err := d.CreateMessage(ctx, user, room, fmt.Sprintf("p-%d", i), "<p>p</p>", "p"); err != nil {
+				t.Fatal(err)
+			}
+			return time.Since(start)
+		}
+		for i := 0; i < 20; i++ {
+			post(i)
+		}
+		reader, err := sql.Open("sqlite3", "file:"+path+"?mode=ro&_busy_timeout=5000&_journal_mode=WAL")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		reader.SetMaxOpenConns(1)
+		tx, err := reader.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pinned int
+		if err := tx.QueryRow("SELECT count(*) FROM messages").Scan(&pinned); err != nil {
+			t.Fatal(err)
+		}
+
+		start := time.Now()
+		var worst time.Duration
+		for i := 20; i < 420; i++ {
+			if d := post(i); d > worst {
+				worst = d
+			}
+		}
+		pinnedFor := time.Since(start)
+		if d.writer.restartIncomplete.Load() == 0 {
+			t.Fatalf("no refused restart recorded with a reader pinned (attempts=%d completed=%d deferred=%d)",
+				d.writer.restartAttempts.Load(), d.writer.restarts.Load(), d.writer.restartDeferred.Load())
+		}
+		if worst > time.Second {
+			t.Fatalf("writer stalled %v on one post with a pinned reader; want the attempt bounded to %d ms",
+				worst, write.CheckpointBusyMS)
+		}
+		if stall := time.Duration(d.writer.restartStallMax.Load()); stall > time.Second {
+			t.Fatalf("worst restart attempt took %v, want under 1s", stall)
+		}
+		if pinnedFor > 10*time.Second {
+			t.Fatalf("400 posts with a pinned reader took %v, want the writer not to stall repeatedly", pinnedFor)
+		}
+		// The reader holds its slot: a direct attempt is still refused, and it
+		// is reported as refused rather than as a restart.
+		outcome, err := d.lane.backfillRestart()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !outcome.attempted || outcome.completed {
+			t.Fatalf("attempt with the reader still pinned = %+v, want attempted and refused", outcome)
+		}
+
+		// Releasing the reader lets the next attempt complete and reset the WAL.
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		outcome, err = d.lane.backfillRestart()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !outcome.completed {
+			t.Fatalf("attempt after the reader released = %+v, want completed", outcome)
+		}
+		// The refused attempts armed the writer's backoff; wait it out (it is
+		// bounded by restartBackoffMax) so the next drains are allowed to try.
+		if wait := time.Until(d.writer.restartAfter); wait > 0 {
+			time.Sleep(wait)
+		}
+		completedBefore := d.writer.restarts.Load()
+		for i := 420; i < 820; i++ {
+			post(i)
+		}
+		if d.writer.restarts.Load() <= completedBefore {
+			t.Fatalf("no restart completed after the reader released (restarts=%d incomplete=%d attempts=%d)",
+				d.writer.restarts.Load(), d.writer.restartIncomplete.Load(), d.writer.restartAttempts.Load())
+		}
+	})
+}
+
+// TestWALRestartDefersToCheckpointerGate pins the coordination requirement:
+// while the background checkpointer holds the checkpoint gate, the writer must
+// not run a restart (SQLite allows one checkpoint at a time, and a restart that
+// arrives while another holds the lock is refused) — it defers, without
+// stalling, and runs on a later drain once the gate is free.
+func TestWALRestartDefersToCheckpointerGate(t *testing.T) {
+	runBothLanes(t, func(t *testing.T) {
+		t.Setenv("CAMPFIRE_CHECKPOINT_PAGES", "200")
+		t.Setenv("CAMPFIRE_CHECKPOINT_MS", "3600000")
+		path := filepath.Join(t.TempDir(), "gate.sqlite3")
+		d, user, room := seedPoster(t, path, 4)
+		defer d.Close()
+		ctx := context.Background()
+		post := func(i int) time.Duration {
+			t.Helper()
+			start := time.Now()
+			if _, err := d.CreateMessage(ctx, user, room, fmt.Sprintf("g-%d", i), "<p>g</p>", "g"); err != nil {
+				t.Fatal(err)
+			}
+			return time.Since(start)
+		}
+		if d.writer.gate == nil || d.checkpoints.gate != d.writer.gate {
+			t.Fatal("writer and checkpointer must share one checkpoint gate")
+		}
+		// Hold the gate as a running checkpoint would. Unlock before any
+		// assertion that can fail the test: DB.Close runs the checkpointer's
+		// final checkpoint, which takes the same gate.
+		d.writer.gate.lock()
+		var worst time.Duration
+		for i := 0; i < 400; i++ {
+			if d := post(i); d > worst {
+				worst = d
+			}
+		}
+		attempts := d.writer.restartAttempts.Load()
+		deferred := d.writer.restartDeferred.Load()
+		d.writer.gate.unlock()
+		if attempts != 0 {
+			t.Fatalf("writer ran %d restarts while the gate was held", attempts)
+		}
+		if deferred == 0 {
+			t.Fatal("no deferral recorded while the gate was held")
+		}
+		if worst > 500*time.Millisecond {
+			t.Fatalf("writer stalled %v while the gate was held; it must defer, not wait", worst)
+		}
+		for i := 400; i < 800; i++ {
+			post(i)
+		}
+		if d.writer.restartAttempts.Load() == 0 {
+			t.Fatal("no restart attempt after the gate released")
+		}
+		if d.writer.restarts.Load() == 0 {
+			t.Fatalf("no completed restart after the gate released (attempts=%d incomplete=%d)",
+				d.writer.restartAttempts.Load(), d.writer.restartIncomplete.Load())
+		}
+	})
 }
 
 // TestCheckpointPolicyConfigSemantics pins the knobs' shapes: 0 disables the
