@@ -13,8 +13,8 @@ import (
 
 // This file is the ENGINE-30 search result cache: a bounded, byte-counted LRU
 // of search pages keyed by (userID, normalized query, corpusVersion,
-// membershipVersion). A hit serves the cached page inputs — the message
-// fragments through the recorded piece path, no FTS scan, no Rooms read, no
+// membershipVersion, observed generation). A hit serves the cached page inputs —
+// message fragments through the recorded piece path, no FTS scan, no Rooms read, no
 // RecentSearches read — and only the version-visible state changes can make
 // it miss.
 //
@@ -23,13 +23,13 @@ import (
 // The corpus counter is a single global value: a message anywhere in the
 // account invalidates every cached query. That is deliberately conservative —
 // it trades capacity for the guarantee that no entry outlives the corpus it
-// was read from.
+// was read from. The pinned-reader generation also invalidates external writes
+// and DDL that do not update the local counters.
 //
 // The entry stores the search results (full message records, page order), the
 // recent-searches list and nothing else: the search sidebar renders recent
-// searches, and the rooms list the miss path reads renders nothing on this
-// page, so it is skipped rather than cached. Recent searches change only
-// through POST /searches and DELETE /searches/clear, and both purge the
+// searches, and the unused rooms read was removed from both paths. Recent
+// searches change through POST /searches and DELETE /searches/clear; both purge the
 // user's entries, so a cached recent list is current by construction.
 //
 // Budget: CAMPFIRE_SEARCH_CACHE_MB (default 16) bytes of decoded page state,
@@ -147,7 +147,7 @@ func newSearchResultCache(limit int) *searchResultCache {
 	return &searchResultCache{entries: make(map[[32]byte]*listElement), byUser: make(map[int64]*listElement), limit: limit}
 }
 
-// searchCacheKey digests the four key components in place; the digest is the
+// searchCacheKey digests the five key components in place; the digest is the
 // map key, so a lookup allocates nothing. The length-prefixed query keeps the
 // digest input injective.
 func searchCacheKey(user int64, query string, corpus, membership int64, generation uint64) [32]byte {
@@ -162,13 +162,26 @@ func searchCacheKey(user int64, query string, corpus, membership int64, generati
 	b = append(b, ',')
 	b = strconv.AppendInt(b, int64(len(query)), 10)
 	b = append(b, ':')
-	b = append(b, query...)
-	return sha256.Sum256(b)
+	if len(query) <= len(buf)-len(b) {
+		b = append(b, query...)
+		return sha256.Sum256(b)
+	}
+	// Long queries keep the same digest input without growing the scratch.
+	h := sha256.New()
+	h.Write(b)
+	for len(query) > 0 {
+		n := copy(buf[:], query)
+		h.Write(buf[:n])
+		query = query[n:]
+	}
+	var digest [32]byte
+	h.Sum(digest[:0])
+	return digest
 }
 
-// get returns the cached result for the key, or false. On a hit the entry is
-// verified to carry the exact key — an astronomically unlikely digest
-// collision reads as a miss rather than another user's page.
+// get returns the cached result for the digest key, or false. Original key
+// fields are not retained: identity relies on SHA-256 collision resistance,
+// avoiding duplicate query storage. This is not full-key verification.
 func (c *searchResultCache) get(user int64, query string, corpus, membership int64, generation uint64) (searchResult, bool) {
 	key := searchCacheKey(user, query, corpus, membership, generation)
 	c.mu.Lock()

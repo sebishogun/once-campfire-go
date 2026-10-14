@@ -115,9 +115,11 @@ func (s *Server) roomRow(c *fastdb.Conn, ctx context.Context, user, id int64) (d
 func (s *Server) messageRefs(c *fastdb.Conn, ctx context.Context, room, anchor int64, direction string, version time.Time) ([]database.Message, messageValidator, error) {
 	generation, observable := s.contextGeneration(ctx)
 	key := messageRefsKey{generation: generation, room: room, version: version.UnixMicro(), anchor: anchor, direction: direction}
-	if entry, ok := s.refsCache.lookup(key); observable && ok {
-		s.messageRefsHits.Add(1)
-		return entry.refs, messageValidator{etag: entry.etag}, nil
+	if observable {
+		if entry, ok := s.refsCache.lookup(key); ok {
+			s.messageRefsHits.Add(1)
+			return entry.refs, messageValidator{etag: entry.etag}, nil
+		}
 	}
 	s.messageRefsMisses.Add(1)
 	var messages []database.Message

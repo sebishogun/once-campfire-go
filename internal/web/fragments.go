@@ -3,7 +3,6 @@ package web
 import (
 	"container/list"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"html/template"
 	"strconv"
@@ -36,6 +35,9 @@ func (c *fragmentCache) get(key string) (template.HTML, bool) {
 	return entry.html, ok
 }
 func (c *fragmentCache) entry(key string) (fragmentEntry, bool) {
+	if key == "" {
+		return fragmentEntry{}, false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
@@ -53,6 +55,9 @@ func (c *fragmentCache) put(key string, html template.HTML) template.HTML {
 }
 func (c *fragmentCache) putEntry(entry fragmentEntry) fragmentEntry {
 	key, html := entry.key, entry.html
+	if key == "" {
+		return entry
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.entries[key]; ok {
@@ -98,16 +103,13 @@ func messageCacheKey(message database.Message) string {
 // Namespace timestamp fragments by the generation observed before request reads.
 // An older in-flight render cannot populate a newer generation after a commit.
 func (s *Server) fragmentKey(ctx context.Context, key string) string {
-	version := uint64(0)
+	version, eligible := s.contextGeneration(ctx)
 	var host, origin string
 	if info := requestMetadata(ctx); info != nil {
-		version = info.databaseVersion
 		host, origin = info.host, info.origin
-	} else {
-		version, _ = s.DB.ResponseVersion(ctx)
 	}
-	if version == 0 {
-		return "uncached/" + rand.Text() + "/" + key
+	if !eligible {
+		return ""
 	}
 	return strconv.FormatUint(version, 10) + "/" + strconv.Quote(host) + "/" + strconv.Quote(origin) + "/" + key
 }

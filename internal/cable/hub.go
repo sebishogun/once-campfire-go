@@ -928,13 +928,7 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient, scratch *pu
 	// observed, this pass neither serves nor stores cache entries.
 	responseVersion, versionErr := h.db.ResponseVersion(ctx)
 	cacheable := versionErr == nil
-	if scratch.authzSeen == nil {
-		scratch.authzSeen = make(map[authzKey]int64)
-	}
 	seen := scratch.authzSeen
-	if cap(scratch.authzMisses) < len(recipients) {
-		scratch.authzMisses = make([]authzKey, 0, len(recipients))
-	}
 	misses := scratch.authzMisses[:0]
 	h.authz.mu.Lock()
 	// ENGINE-61: the recipients of one publish overwhelmingly share a few
@@ -963,13 +957,8 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient, scratch *pu
 		if j < memoLen {
 			continue
 		}
-		if user, ok := seen[key]; ok {
-			r.user = user
-			continue
-		}
 		if e := h.authz.m[key]; e != nil && cacheable && e.sess == sess && e.member == member && e.userVersion == userVersion && e.responseVersion == responseVersion {
 			r.user = e.userID
-			seen[key] = e.userID
 			if memoLen < len(memo) {
 				memo[memoLen] = struct {
 					key  authzKey
@@ -978,6 +967,16 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient, scratch *pu
 				memoLen++
 			}
 			continue
+		}
+		// Deduplicate only misses; warm distinct-session hits need neither
+		// a seen-map lookup nor miss storage.
+		r.user = 0
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if seen == nil {
+			seen = make(map[authzKey]int64)
+			scratch.authzSeen = seen
 		}
 		seen[key] = 0
 		misses = append(misses, key)
@@ -1028,7 +1027,10 @@ func (h *Hub) authorize(ctx context.Context, recipients []recipient, scratch *pu
 		h.authz.mu.Unlock()
 	}
 	for i := range recipients {
-		user := seen[authzKey{room: recipients[i].room, token: recipients[i].client.token}]
+		user, missed := seen[authzKey{room: recipients[i].room, token: recipients[i].client.token}]
+		if !missed {
+			continue
+		}
 		if user < 0 {
 			user = 0
 		}
@@ -1067,30 +1069,36 @@ type publishScratch struct {
 // particular must be truncated, never merely appended to: a target left
 // eligible by an earlier publication would otherwise filter as eligible now.
 func (s *publishScratch) reset() {
-	clear(s.recips[:cap(s.recips)])
-	clear(s.tokens[:cap(s.tokens)])
-	clear(s.authzMisses[:cap(s.authzMisses)])
-	if len(s.authzSeen) > 4096 {
+	// Scratch has exclusive ownership. Drop oversized arrays before clearing;
+	// retain bounded large-fanout storage rather than churn at 5,000 clients.
+	const maxRetained = 16384
+	if len(s.authzSeen) > maxRetained {
 		s.authzSeen = nil
 	} else {
 		clear(s.authzSeen)
 	}
-	if cap(s.recips) > 4096 {
+	if cap(s.recips) > maxRetained {
 		s.recips = nil
+	} else {
+		clear(s.recips[:cap(s.recips)])
 	}
-	if cap(s.tokens) > 4096 {
+	if cap(s.tokens) > maxRetained {
 		s.tokens = nil
+	} else {
+		clear(s.tokens[:cap(s.tokens)])
 	}
-	if cap(s.authzMisses) > 4096 {
+	if cap(s.authzMisses) > maxRetained {
 		s.authzMisses = nil
+	} else {
+		clear(s.authzMisses[:cap(s.authzMisses)])
 	}
 	if cap(s.wrap) > 1<<20 {
 		s.wrap = nil
 	}
-	if cap(s.targets) > 4096 {
+	if cap(s.targets) > maxRetained {
 		s.targets = nil
 	}
-	if cap(s.fresh) > 4096 {
+	if cap(s.fresh) > maxRetained {
 		s.fresh = nil
 	}
 	s.authzMisses = s.authzMisses[:0]

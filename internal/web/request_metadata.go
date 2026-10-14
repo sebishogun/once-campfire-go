@@ -27,12 +27,21 @@ func requestMetadata(ctx context.Context) *requestInfo {
 	return info
 }
 
-// contextGeneration reuses the pre-read observation for the entire request.
-// Failed observations bypass caching; retrying later could admit earlier reads
-// under a newer generation. Non-HTTP callers observe before their own read.
+// contextGeneration returns the immutable admission generation and current
+// cache eligibility. The first dependent lookup validates the capture even
+// when whole-response caching is disabled. A failed or rejected observation
+// bypasses caching for the rest of the request; retrying could admit earlier
+// reads under a newer generation. Non-HTTP callers observe before their read.
 func (s *Server) contextGeneration(ctx context.Context) (uint64, bool) {
 	if info := requestMetadata(ctx); info != nil {
-		return info.databaseVersion, info.databaseVersion != 0
+		if !info.generationChecked {
+			current, err := s.DB.ResponseVersion(ctx)
+			info.generationChecked = true
+			info.generationCurrent = err == nil && info.databaseVersion != 0 && current == info.databaseVersion
+		}
+		// Keep the admission generation immutable even when it is rejected.
+		// Every dependent cache must then bypass both lookup and admission.
+		return info.databaseVersion, info.generationCurrent
 	}
 	version, err := s.DB.ResponseVersion(ctx)
 	return version, err == nil && version != 0

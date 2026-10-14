@@ -38,8 +38,8 @@ func messageListKey(messages []database.Message) string {
 }
 
 // messageListIdentity hashes the message identities that decide the list's
-// bytes — every message's id and updated-at stamp — together with the
-// observed database generation (ef00d84): the piece namespace moves with
+// bytes — every message's id and updated-at stamp, and request host/origin —
+// together with the observed database generation (ef00d84): the namespace moves with
 // every commit, so an in-flight render at generation N can never populate
 // generation N+1, and external-process commits invalidate by generation
 // alone. It appends into a stack scratch and hashes in place, so a
@@ -47,25 +47,28 @@ func messageListKey(messages []database.Message) string {
 // The stamp is the Unix microsecond value, the precision the database stores
 // (database.Stamp writes exactly microseconds), so an edit still changes the
 // identity. cacheable is false when the generation has not been observed yet
-// (a fresh connection reports PRAGMA data_version 0): like fragmentKey's
-// "uncached/" policy, nothing may be retained from a render the observer has
-// not synced.
+// or has been rejected: like fragmentKey's empty-key policy, nothing may be
+// retained from a render the observer has not synced.
 func (s *Server) messageListIdentity(ctx context.Context, messages []database.Message) (identity [32]byte, cacheable bool) {
 	var scratch [2048]byte
 	buf := scratch[:0]
-	version := uint64(0)
-	if info := requestMetadata(ctx); info != nil {
-		version = info.databaseVersion
-	} else {
-		// Background helpers have no HTTP entry metadata; read the
-		// generation directly, exactly like fragmentKey's fallback.
-		version, _ = s.DB.ResponseVersion(ctx)
-	}
-	if version == 0 {
+	version, eligible := s.contextGeneration(ctx)
+	if !eligible {
 		return identity, false
 	}
 	buf = strconv.AppendUint(buf, version, 10)
 	buf = append(buf, ';')
+	var host, origin string
+	if info := requestMetadata(ctx); info != nil {
+		host, origin = info.host, info.origin
+	}
+	// Length prefixes separate arbitrary host/origin bytes unambiguously.
+	buf = strconv.AppendInt(buf, int64(len(host)), 10)
+	buf = append(buf, ':')
+	buf = append(buf, host...)
+	buf = strconv.AppendInt(buf, int64(len(origin)), 10)
+	buf = append(buf, ':')
+	buf = append(buf, origin...)
 	for i := range messages {
 		buf = strconv.AppendInt(buf, messages[i].ID, 10)
 		buf = append(buf, ';')

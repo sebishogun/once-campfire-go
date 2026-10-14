@@ -1233,8 +1233,8 @@ func (s *Server) createMessage(w http.ResponseWriter, r *http.Request, u databas
 }
 
 // requestGeneration returns the immutable database generation observed for
-// this request before any reads (ServeHTTP captures it once) and whether one
-// is available. Callers that cannot observe a generation must neither consult
+// this request before any reads (ServeHTTP captures it once) and whether it
+// remains cache-eligible. Callers without an eligible generation must neither consult
 // nor admit a generation-gated cache: an unobservable generation cannot prove
 // freshness.
 func (s *Server) requestGeneration(r *http.Request) (uint64, bool) {

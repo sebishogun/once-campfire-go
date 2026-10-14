@@ -95,7 +95,8 @@ Ahead of C on messages, search and post; C is faster on room and sidebar by medi
 - Warm, single-viewer, tmpfs databases, c=16; three rounds are limited replication.
 - WAL threshold is not a hard bound: persistent readers can prevent restart.
   Threshold PASSIVE/RESTART can delay queued writers before accepting the next batch.
-- Queued primary commit and after-phase index/unread work have a process-crash window.
+- FTS indexing commits in the primary message transaction. Only the second-phase unread
+  update remains exposed to a process crash after primary commit.
 - WAL `synchronous=NORMAL` can lose commits since the last checkpoint on power loss.
 - PGO benefit was undetected; GOGC=200 trades memory for CPU and is a Docker-image default only.
 - Screen/accessibility parity is not full DOM or wire parity. Historical browser

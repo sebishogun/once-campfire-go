@@ -128,19 +128,22 @@ cancellation mid-query; a cancelled request completes its read and renders rathe
 context error.
 `CAMPFIRE_SEARCH_CACHE` (default `on`; same value shapes and warning policy as the other switches)
 serves repeated `GET /searches` pages from a bounded in-process result cache keyed by (user,
-normalized query, corpus version, membership version), skipping the FTS scan, the `Rooms` read and
-the `RecentSearches` read on a hit; the message fragments come from the recorded piece cache (same
+normalized query, corpus version, membership version, observed database generation), skipping the FTS
+scan and the `RecentSearches` read on a hit. The unused `Rooms` read was removed from both paths;
+the message fragments come from the recorded piece cache (same
 content-keyed pieces a miss would produce), so no fragment re-renders. The corpus version is a
 global counter bumped by every committed message create/edit/delete, boost change and room destroy;
 the membership version is bumped by every committed membership grant/revocation, involvement change
 and account create/deactivate. A hit therefore serves the byte-identical page a re-read would
-produce — the differential and poisoning tests hold it that way, including a test that drops the FTS
-index after a fill and requires the cached path to keep serving while `database/sql` fails. POST
+produce within the observed generation. External writes and DDL, including dropping the FTS index,
+invalidate old entries; a post-DDL miss must query the database and can fail if the index is absent.
+The isolated hit-path test explicitly seeds an entry under the post-DDL generation. POST
 `/searches` and `DELETE /searches/clear` keep their database behavior and also purge the user's
 cached entries, so the rendered recent-searches list stays current. Deliberate trade-offs: on a hit
 the page's "last room" link is still read per request (it depends on the `last_room` cookie), and a
-cached entry can be as stale as the version counters allow — a version bump is the only invalidator,
-so a process whose writers run outside `internal/database` (none today) would serve stale pages.
+generation capture is not a transaction-wide snapshot. A rejected capture bypasses dependent caches
+without relabeling earlier reads. Keys use SHA-256 digest identity rather than full-key verification;
+long queries are hashed incrementally in fixed scratch without query-sized allocation.
 `CAMPFIRE_SEARCH_CACHE_MB` sizes it (default 16; `0` disables storage; an entry larger than a
 quarter of the budget is not cached).
 `CAMPFIRE_WRITE_QUEUE` (default `on`; also accepts `true`/`1` and `off`/`false`/`0`, warning on
@@ -227,8 +230,8 @@ runs on the commit path or per message.
 `CAMPFIRE_WRITE_QUEUE`) runs the message create transaction as direct prepared statements on one
 serialized fastdb connection (`internal/fastdb/write` over `internal/fastdb/csqlite`) instead of
 `database/sql`: the same six statements — the authorized creator lookup (membership check and name
-in one statement), message insert, room touch, rich-text body, attachment, then the search-index
-insert and unread bump in after-commit order — bound positionally (int64/text/null), prepared once
+in one statement), message insert, room touch, rich-text body, attachment, and search-index insert
+in the primary transaction; only the unread bump remains in the second phase — bound positionally (int64/text/null), prepared once
 and reused across jobs, with the same `BEGIN IMMEDIATE`, savepoint-per-job, single-commit-per-batch
 and writer-owned bounded-after-phase shapes the `database/sql` lane has. The pragma set is identical
 (`busy_timeout=5000`, `foreign_keys=on`, WAL, `synchronous=NORMAL`, `cache_size=2000`,
@@ -534,9 +537,11 @@ exemption; bot-key endpoints exempt authenticated bots only.
   Room pages also cache their surrounding HTML keyed by fresh page data, inserting the current
   messages and refresh timestamp on every request. Responses assemble cached message bytes with fresh page HTML and derive validators from part
   lengths and hashes, so ETag values differ from both the original Go implementation and Rust.
-- Message and message-list fragments carry the observed database generation and the request
-  host/origin in their cache keys (a dedicated pinned SQLite reader observes local and foreign
-  commits, `PRAGMA data_version`), so external edits without timestamp changes and
+- Message fragments, legacy lists and recorded-list pieces carry the observed database generation
+  and request host/origin in their cache keys (recorded identities length-prefix both strings).
+  A rejected ingress generation disables dependent read, reference, fragment and piece caches,
+  including when whole-response caching is off. A dedicated pinned SQLite reader observes local and foreign
+  commits (`PRAGMA data_version`), so external edits without timestamp changes and
   host-dependent rich-text filtering are reflected in the caches without manual invalidation.
 - Message pagination uses its complete rendered body for its ETag, including related-user and
   boost changes. It omits Last-Modified because message timestamps cannot describe external
@@ -573,9 +578,9 @@ their own licenses.
 
 Shared verification harness (`basecamp/once-campfire-verification`, revision
 `ec02deb`, same machine, tmpfs runtime, c=16, 3 rounds, zero errors) against
-the latest published Rust revision `f9dca47`:
+Rust revision `f9dca47`, measuring Go train `34782d0` (historical, before the composition fixes):
 
-| Route | Rust `f9dca47` | This branch | vs Rust |
+| Route | Rust `f9dca47` | Go `34782d0` | vs Rust |
 |---|---:|---:|---:|
 | Room page | 109,586 | 149,403 | 1.36× |
 | Messages page | 106,497 | 192,759 | 1.81× |
@@ -583,7 +588,7 @@ the latest published Rust revision `f9dca47`:
 | Search | 125,870 | 197,400 | 1.57× |
 | Post message | 8,235 | 15,817 | 1.92× |
 
-Every route is ahead of Rust (1.34×-1.92×); the local Rust image reproduces
+In that run every route was ahead of Rust (1.34×-1.92×); the local Rust image reproduced
 the published Rust figures within ~2-4%. Against the C port at native tmpfs
-conditions this branch leads on messages (1.17×), search (1.15×) and post
+conditions that historical train led on messages (1.17×), search (1.15×) and post
 (2.42×), with room and sidebar near parity (0.94×/0.96×).

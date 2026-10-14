@@ -159,6 +159,10 @@ func (c *Conn) WritePreparedBatchDeadlineRetained(deadline time.Time, msgs []*Pr
 }
 
 func (c *Conn) writePreparedBatchCore(ctx context.Context, deadline time.Time, retainDeadline bool, msgs []*PreparedMessage) (err error) {
+	defer func() {
+		clear(c.batchData[:cap(c.batchData)])
+		clear(c.batchBufs[:cap(c.batchBufs)])
+	}()
 	// Resolve payloads (the compressed forms are shared and computed once)
 	// before taking the frame lock.
 	if cap(c.batchData) < len(msgs) {
@@ -266,7 +270,11 @@ func (c *Conn) writePreparedBatchCore(ctx context.Context, deadline time.Time, r
 	// upgrade-handoff replay conn) are peeled to the TCP connection first,
 	// or the batch degrades to one write(2) per segment; anything without
 	// an underlying TCP conn keeps the wrapped-conn fallback.
+	// WriteTo advances its receiver slice. Keep the original backing-array
+	// start so cleanup covers every slot and the next batch reuses capacity.
+	bufs := c.batchBufs
 	_, err = c.batchBufs.WriteTo(writevTarget(c.rwc))
+	c.batchBufs = bufs
 	return err
 }
 
