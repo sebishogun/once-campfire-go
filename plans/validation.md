@@ -929,7 +929,7 @@ Native driver (no containers), CPUs 8-11 vs 12-15, conc 16, 8 s samples,
 3 alternating rounds, both databases on tmpfs, contract-validated, zero
 errors:
 
-| Route | C | Go train | Go/C |
+| Route | C | Go train `34782d0` | Go/C |
 |---|---:|---:|---:|
 | room_show | 156,170 | 146,722 | 0.94× |
 | messages_page | 161,041 | 188,938 | 1.17× |

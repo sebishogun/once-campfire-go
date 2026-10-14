@@ -43,6 +43,60 @@ func (d *DB) AckPush(ctx context.Context, id int64) error {
 	return err
 }
 
+// PushProgress is one attempted recipient's durable outcome. Failed recipients
+// move behind untouched work; successful recipients never restart on replay.
+type PushProgress struct {
+	MessageID, SubscriptionID int64
+	Completed                 bool
+	Gone                      bool
+}
+
+type PushOutcome struct {
+	MessageID int64
+	Complete  bool
+	RetryAt   int64
+}
+
+// SavePushProgress commits one bounded scan, with no network work in the
+// transaction. Crash before commit may replay accepted deliveries (at-least-once).
+func (d *DB) SavePushProgress(ctx context.Context, progress []PushProgress, outcomes []PushOutcome) error {
+	if len(progress) == 0 && len(outcomes) == 0 {
+		return nil
+	}
+	tx, err := d.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UnixNano()
+	for _, p := range progress {
+		if p.Gone {
+			if _, err = tx.ExecContext(ctx, "DELETE FROM push_subscriptions WHERE id=?", p.SubscriptionID); err != nil {
+				return err
+			}
+			continue
+		}
+		// A subscription/message may have been deleted during the network call.
+		_, err = tx.ExecContext(ctx, `INSERT INTO campfire_push_progress(message_id,subscription_id,completed,attempted_at)
+		 SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM campfire_push_outbox WHERE message_id=?) AND EXISTS (SELECT 1 FROM push_subscriptions WHERE id=?)
+		 ON CONFLICT(message_id,subscription_id) DO UPDATE SET completed=excluded.completed,attempted_at=excluded.attempted_at`, p.MessageID, p.SubscriptionID, p.Completed, now, p.MessageID, p.SubscriptionID)
+		if err != nil {
+			return err
+		}
+	}
+	for _, o := range outcomes {
+		if o.Complete {
+			_, err = tx.ExecContext(ctx, "DELETE FROM campfire_push_outbox WHERE message_id=?", o.MessageID)
+		} else {
+			_, err = tx.ExecContext(ctx, "UPDATE campfire_push_outbox SET retry_at=? WHERE message_id=?", o.RetryAt, o.MessageID)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (d *DB) PushRoom(ctx context.Context, id int64) (Room, error) {
 	r := Room{ID: id}
 	err := d.Read.QueryRowContext(ctx, "SELECT coalesce(name,''),type FROM rooms WHERE id=?", id).Scan(&r.Name, &r.Type)

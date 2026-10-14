@@ -227,34 +227,46 @@ func (s *Server) drainPushOutbox(ctx context.Context) error {
 			return nil
 		}
 		var first error
+		var progressStorage [128]database.PushProgress
+		progress := progressStorage[:0]
+		var outcomeStorage [128]database.PushOutcome
+		outcomes := outcomeStorage[:0]
 		for _, id := range ids {
+			if ctx.Err() != nil || len(progress) == cap(progress) {
+				break
+			}
+			outcome := database.PushOutcome{MessageID: id, Complete: true}
 			if s.Push.VAPID != nil {
 				message, err := s.DB.Message(ctx, id)
 				if err == nil {
 					var room database.Room
 					room, err = s.DB.PushRoom(ctx, message.RoomID)
 					if err == nil {
-						err = s.deliverPush(ctx, message, room, nil)
+						progress, outcome, err = s.deliverPushProgress(ctx, message, room, progress)
 					}
 				}
 				if err != nil && !errors.Is(err, sql.ErrNoRows) {
-					// The delivery may have spent its query context. Persist retry
-					// backoff with a separate bounded budget before returning.
-					retryCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-					retryErr := s.DB.RetryPush(retryCtx, id)
-					stop()
-					if retryErr != nil {
-						return retryErr
+					if outcome.Complete {
+						outcome.Complete = false
+						outcome.RetryAt = time.Now().Add(30 * time.Second).Unix()
 					}
 					if first == nil {
 						first = err
 					}
-					continue
 				}
 			}
-			if err := s.DB.AckPush(ctx, id); err != nil {
-				return err
-			}
+			outcomes = append(outcomes, outcome)
+		}
+		// Network delivery can exhaust the scan context. Persist its completed
+		// prefix once, using a separate short budget, before returning.
+		saveCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		err = s.DB.SavePushProgress(saveCtx, progress, outcomes)
+		stop()
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		if first != nil {
 			return first
@@ -283,21 +295,21 @@ const pushRequestTimeout = 5 * time.Second
 // A var, like the cable package's frame-cache bounds, so tests can shorten it.
 var deliveryTimeout = 5 * time.Second
 
-// deliverPush is the moved Room::PushMessageJob: the recipient query, the
+// deliverPushProgress is the moved Room::PushMessageJob: the recipient query, the
 // per-subscriber badge and payload, and the delivery attempts, all after the
 // posting request has responded (the reference runs this job async).
-func (s *Server) deliverPush(ctx context.Context, message database.Message, room database.Room, mentioned []int64) error {
-	ctx, cancel := context.WithTimeout(ctx, pushRequestTimeout)
-	defer cancel()
-	if mentioned == nil {
-		mentioned = s.mentionedIDs(ctx, message.Body)
-	}
-	subscriptions, err := s.DB.PushRecipients(ctx, room.ID, message.CreatorID, mentioned)
+func (s *Server) deliverPushProgress(ctx context.Context, message database.Message, room database.Room, progress []database.PushProgress) ([]database.PushProgress, database.PushOutcome, error) {
+	outcome := database.PushOutcome{MessageID: message.ID}
+	mentioned := s.mentionedIDs(ctx, message.Body)
+	remaining := cap(progress) - len(progress)
+	subscriptions, err := s.DB.PendingPushRecipients(ctx, message.ID, room.ID, message.CreatorID, mentioned, remaining+1)
 	if err != nil {
-		return err
+		outcome.RetryAt = time.Now().Add(30 * time.Second).Unix()
+		return progress, outcome, err
 	}
 	if len(subscriptions) == 0 {
-		return nil
+		outcome.Complete = true
+		return progress, outcome, nil
 	}
 	body := s.plainText(ctx, message.Body)
 	if attachment, err := s.Storage.Attached(ctx, "Message", message.ID, "attachment"); err == nil && attachment.ID != 0 && strings.TrimSpace(body) == "" {
@@ -311,21 +323,42 @@ func (s *Server) deliverPush(ctx context.Context, message database.Message, room
 	}
 	title = integrations.TruncatePush(title, 256)
 	body = integrations.TruncatePush(body, 3072)
-	for _, subscription := range subscriptions {
+	var first error
+	for i, subscription := range subscriptions {
+		if ctx.Err() != nil || i == remaining {
+			// Untouched suffix stays immediately due, ahead of failed recipients.
+			return progress, outcome, first
+		}
+		current, err := s.DB.CurrentPushRecipient(ctx, subscription.ID, room.ID, message.CreatorID, mentioned)
+		if errors.Is(err, sql.ErrNoRows) {
+			progress = append(progress, database.PushProgress{MessageID: message.ID, SubscriptionID: subscription.ID, Completed: true})
+			continue
+		}
+		if err != nil {
+			return progress, outcome, err
+		}
+		subscription = current
 		badge, err := s.DB.UnreadCount(ctx, subscription.UserID)
 		if err != nil {
-			return err
+			return progress, outcome, err
 		}
 		payload := notificationJSON(title, body, fmt.Sprintf("/rooms/%d", room.ID), badge)
-		if err := s.Push.Send(ctx, subscription.Endpoint, subscription.Key, subscription.Auth, payload); err != nil {
+		err = s.Push.Send(ctx, subscription.Endpoint, subscription.Key, subscription.Auth, payload)
+		gone := false
+		if err != nil {
 			if errors.Is(err, integrations.ErrPushGone) || errors.Is(err, integrations.ErrPushPoint) {
-				if err := s.DB.DeletePushSubscription(ctx, subscription.UserID, subscription.ID); err != nil {
-					return err
-				}
-				continue
+				gone = true
+				err = nil
 			}
-			return err
+			if err != nil && first == nil {
+				first = err
+			}
 		}
+		progress = append(progress, database.PushProgress{MessageID: message.ID, SubscriptionID: subscription.ID, Completed: err == nil, Gone: gone})
 	}
-	return nil
+	outcome.Complete = first == nil
+	if first != nil {
+		outcome.RetryAt = time.Now().Add(30 * time.Second).Unix()
+	}
+	return progress, outcome, first
 }

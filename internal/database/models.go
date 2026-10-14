@@ -466,11 +466,8 @@ func (d *DB) createMessage(
 	}
 	// The shared commit landed; the ENGINE-20/ENGINE-30 registries must move
 	// with it so no reader serves a version-keyed cache that hides the
-	// committed message. The after-commit work has already committed (writer
-	// second phase) or committed with the row (in-line), so the bumps never
-	// run ahead of the search row they describe. The crash window the writer
-	// documents (message row without its index row) applies here exactly as
-	// to the search/unread statements.
+	// committed message. FTS, unread state and push intent commit atomically
+	// with the row on both lanes; these bumps follow that primary commit.
 	d.bumpSidebarVersion()
 	d.corpusVersion.Add(1)
 	if staged != nil {
