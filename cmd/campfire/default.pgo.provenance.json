@@ -1,17 +1,17 @@
 {
   "profile": {
     "name": "default.pgo",
-    "bytes": 163545,
-    "sha256": "d9b268f3927dffe843f7bcf9d4c2652a65a0def1181b6981a8ab171184f065a2",
-    "collected_at": "2026-10-14T17:11:23Z"
+    "bytes": 163363,
+    "sha256": "5b9713286f7abbe611181b3d9fe9eff4aa205c90a456ac7bc871db88a46434a5",
+    "collected_at": "2026-10-14T17:15:00Z"
   },
   "binary": {
     "path": "/home/sebishogun/Work/Development/once-campfire-go-opt6/.cache/pgo/campfire-nopgo",
-    "sha256": "b55cee7fc1db7650be39f60166620b93eafb4950a618b77ca2d81a9727890a68",
+    "sha256": "72eabb47174b8fbbbbf80aa05df8c22ddfec3c5e38281b5301626bbeb65a8f8e",
     "bytes": 42350088,
-    "go_version_m": "/home/sebishogun/Work/Development/once-campfire-go-opt6/.cache/pgo/campfire-nopgo: go1.27.1\n\tpath\tgithub.com/basecamp/once-campfire-go/cmd/campfire\n\tmod\tgithub.com/basecamp/once-campfire-go\tv0.0.0-20261014171046-9bfdcd110bb9\t\n\tdep\tgithub.com/coder/websocket\tv1.8.15\n\t=>\t./third_party/websocket\t(devel)\t\n\t\n\tdep\tgithub.com/mattn/go-sqlite3\tv1.14.52\th1:wVbm2Qnf4OXkqhBTSPuCRZDRnxfbVrrmiCEroVdog8U=\n\tdep\tgithub.com/sebishogun/simd\tv1.20.0\th1:klVEUvBL0mO/MrL1PNfCwYhLMtB1V197NpOHRRdPKlM=\n\tdep\tgithub.com/sebishogun/simdhttp\tv0.0.0-20260826101408-b29e9d7285e8\th1:2hvHHM+EN3V+KGmq1jgdDu0uxJK9D2Q19Bh3JouSl5M=\n\tdep\tgolang.org/x/crypto\tv0.57.1-0.20260918190515-b4dcfb54b863\th1:3kG0LLrOfvMqZ37MbeJ/uDk5H6tH2L02vx/OcCQ5i2A=\n\tdep\tgolang.org/x/net\tv0.59.0\th1:5zfYln+w5XCxwrnMMJPufRgNoXEaGxl0wo5GqPXyues=\n\tdep\tgolang.org/x/sys\tv0.48.0\th1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=\n\tdep\tgolang.org/x/text\tv0.42.0\th1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-tags=sqlite_fts5\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=1\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=9bfdcd110bb9d1eaa67d1404d4bc9ae545ab484b\n\tbuild\tvcs.time=2026-10-14T17:10:46Z\n\tbuild\tvcs.modified=false",
+    "go_version_m": "/home/sebishogun/Work/Development/once-campfire-go-opt6/.cache/pgo/campfire-nopgo: go1.27.1\n\tpath\tgithub.com/basecamp/once-campfire-go/cmd/campfire\n\tmod\tgithub.com/basecamp/once-campfire-go\tv0.0.0-20261014171202-bb4006591226\t\n\tdep\tgithub.com/coder/websocket\tv1.8.15\n\t=>\t./third_party/websocket\t(devel)\t\n\t\n\tdep\tgithub.com/mattn/go-sqlite3\tv1.14.52\th1:wVbm2Qnf4OXkqhBTSPuCRZDRnxfbVrrmiCEroVdog8U=\n\tdep\tgithub.com/sebishogun/simd\tv1.20.0\th1:klVEUvBL0mO/MrL1PNfCwYhLMtB1V197NpOHRRdPKlM=\n\tdep\tgithub.com/sebishogun/simdhttp\tv0.0.0-20260826101408-b29e9d7285e8\th1:2hvHHM+EN3V+KGmq1jgdDu0uxJK9D2Q19Bh3JouSl5M=\n\tdep\tgolang.org/x/crypto\tv0.57.1-0.20260918190515-b4dcfb54b863\th1:3kG0LLrOfvMqZ37MbeJ/uDk5H6tH2L02vx/OcCQ5i2A=\n\tdep\tgolang.org/x/net\tv0.59.0\th1:5zfYln+w5XCxwrnMMJPufRgNoXEaGxl0wo5GqPXyues=\n\tdep\tgolang.org/x/sys\tv0.48.0\th1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=\n\tdep\tgolang.org/x/text\tv0.42.0\th1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=\n\tbuild\t-buildmode=exe\n\tbuild\t-compiler=gc\n\tbuild\t-tags=sqlite_fts5\n\tbuild\t-trimpath=true\n\tbuild\tCGO_ENABLED=1\n\tbuild\tGOARCH=amd64\n\tbuild\tGOOS=linux\n\tbuild\tGOAMD64=v1\n\tbuild\tvcs=git\n\tbuild\tvcs.revision=bb40065912262e8160f8ff6e79cb154df941573b\n\tbuild\tvcs.time=2026-10-14T17:12:02Z\n\tbuild\tvcs.modified=false",
     "module": "github.com/basecamp/once-campfire-go",
-    "module_version": "v0.0.0-20261014171046-9bfdcd110bb9",
+    "module_version": "v0.0.0-20261014171202-bb4006591226",
     "build_settings": {
       "-buildmode": "exe",
       "-compiler": "gc",
@@ -22,13 +22,13 @@
       "GOOS": "linux",
       "GOAMD64": "v1",
       "vcs": "git",
-      "vcs.revision": "9bfdcd110bb9d1eaa67d1404d4bc9ae545ab484b",
-      "vcs.time": "2026-10-14T17:10:46Z",
+      "vcs.revision": "bb40065912262e8160f8ff6e79cb154df941573b",
+      "vcs.time": "2026-10-14T17:12:02Z",
       "vcs.modified": "false"
     },
-    "vcs_revision": "9bfdcd110bb9d1eaa67d1404d4bc9ae545ab484b",
+    "vcs_revision": "bb40065912262e8160f8ff6e79cb154df941573b",
     "vcs_modified": false,
-    "vcs_time": "2026-10-14T17:10:46Z"
+    "vcs_time": "2026-10-14T17:12:02Z"
   },
   "pgo_input": {
     "binary_setting": null,
@@ -46,10 +46,8 @@
   },
   "profiler_go_version": "go version go1.27.1 linux/amd64",
   "source_identity": {
-    "status": "checkout-only: not proven to describe the profiled binary",
-    "reasons": [
-      "this checkout has uncommitted changes"
-    ],
+    "status": "describes the profiled binary (clean build of this revision)",
+    "reasons": [],
     "go_sources_sha256": {
       "cmd/campfire/accesslog.go": "d152c31014d5453af198037c85fec25c3440eb88fc4590ece38d9b6c6b040eb1",
       "cmd/campfire/accesslog_test.go": "c7f9040c03ed4f797dcdf539b1d1d385e5cdb30d5bdde9074776e2cd0b7e63cc",
@@ -838,12 +836,10 @@
     }
   },
   "checkout": {
-    "revision": "9bfdcd110bb9d1eaa67d1404d4bc9ae545ab484b",
-    "dirty": true,
-    "dirty_paths": [
-      "md/campfire/default.pgo"
-    ],
-    "diff_sha256": "fa4c0d2d65be67e24c3a0a54b42dd30d4ae65775e94003ba6d41e884f8298f2d",
+    "revision": "bb40065912262e8160f8ff6e79cb154df941573b",
+    "dirty": false,
+    "dirty_paths": [],
+    "diff_sha256": "7cf1011de808d5d57e9c9d0f6b9d121ac390779c859d1bdc8b3355ae81c336da",
     "branch": "opt-runtime"
   },
   "seed": "/home/sebishogun/Work/Development/once-campfire-verification/fixtures/default",
@@ -851,33 +847,33 @@
   "loadgen_sha256": "3951d6712e9b00126400bfb0a3e8afd641f330cff87e0f84a7b031fcfcc6f893",
   "routes": {
     "room_show": {
-      "rps": 151340.4,
+      "rps": 149693.3,
       "p99_ms": 0.367,
-      "ok": 605424,
+      "ok": 598825,
       "bytes": 20116
     },
     "messages_page": {
-      "rps": 164138.8,
-      "p99_ms": 0.321,
-      "ok": 656610,
+      "rps": 163558.1,
+      "p99_ms": 0.323,
+      "ok": 654278,
       "bytes": 10876
     },
     "sidebar": {
-      "rps": 163065.8,
-      "p99_ms": 0.328,
-      "ok": 652320,
+      "rps": 163445.5,
+      "p99_ms": 0.33,
+      "ok": 653843,
       "bytes": 5813
     },
     "search": {
-      "rps": 169182.0,
-      "p99_ms": 0.31,
-      "ok": 676772,
+      "rps": 166009.1,
+      "p99_ms": 0.317,
+      "ok": 664078,
       "bytes": 9335
     },
     "post_message": {
-      "rps": 9067.7,
-      "p99_ms": 8.687,
-      "ok": 36282,
+      "rps": 8982.8,
+      "p99_ms": 8.351,
+      "ok": 35944,
       "bytes": 1925
     }
   },
@@ -900,7 +896,7 @@
     "environment_gogc": null,
     "environment_gomemlimit": null
   },
-  "load_start": "3.05 2.33 1.90 1/3657 1435358",
+  "load_start": "4.09 3.05 2.26 2/3635 1445781",
   "host": "Linux 7.2.5-4-omarchy",
   "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
   "command": "bin/pgo-profile --binary .cache/pgo/campfire-nopgo --gogc 200 --out cmd/campfire/default.pgo"
