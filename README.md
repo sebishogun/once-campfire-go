@@ -329,16 +329,22 @@ with four hardware cores allocated to each app.
 
 | HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | [Go](https://github.com/basecamp/once-campfire-go) | [Rust](https://github.com/basecamp/once-campfire-rust) | [C](https://github.com/basecamp/once-campfire-c) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Room page | 241 | 170 | 164 | 559 | 722 | 96,568 | 36,260 | 141,834 |
-| Messages page | 413 | 196 | 175 | 777 | 1,053 | 102,973 | 40,872 | 151,564 |
-| Sidebar | 552 | 615 | 715 | 4,125 | 1,275 | 60,081 | 34,672 | 159,850 |
-| Search | 435 | 315 | 305 | 1,294 | 1,156 | 132,259 | 33,299 | 155,456 |
-| Post a message | 273 | 154 | 137 | 256 | 801 | 8,502 | 6,896 | 7,460 |
+| Room page | 4,101 | 1,507 | 3,872 | 42,636 | 5,350 | 102,916 | 106,494 | 137,524 |
+| Messages page | 4,115 | 1,596 | 3,995 | 74,362 | 5,712 | 110,629 | 102,697 | 144,642 |
+| Sidebar | 4,333 | 1,873 | 4,493 | 94,329 | 5,949 | 132,733 | 120,294 | 152,002 |
+| Search | 4,282 | 1,862 | 4,172 | 84,665 | 5,848 | 113,333 | 121,378 | 149,487 |
+| Post a message | 330 | 262 | 794 | 2,155 | 1,278 | 8,250 | 8,037 | 7,530 |
+| Backend KLOC | 5.5 | 5.3 | 4.1 | 6.8 | 11.6 | 23.2* | 30.7 | 94.8 |
 
 The Go column reflects this branch's engine, re-measured on this machine with
 the official comparison harness; the other columns are the published cross-port
 figures. The strict same-machine Rails/Rust/Go comparison is in
-[Engine fork results](#engine-fork-results-this-machine) below.
+[Engine fork results](#engine-fork-results-this-machine) below. The Go KLOC is
+the upstream port's published count; this fork's engine backend is additional
+and not counted here.
+
+KLOC counts backend code plus executable code in templates; excludes plain
+HTML, frontend, tests, dependencies and generated files.
 
 [Shared verification](https://github.com/basecamp/once-campfire-verification) · [Detailed results](https://github.com/basecamp/once-campfire-verification/blob/main/docs/performance-review.md).
 
@@ -382,6 +388,12 @@ Raw reports: `../once-campfire-elixir/bench/results/FINAL4-official-20261007/`
 and `bench/results/final4-native-20261007/`.
 
 ## Known differences
+
+Browser writes use Rust’s token-free Fetch Metadata policy: exact `same-origin` or
+`same-site`, a matching Origin when provided, and absent metadata only on plain
+HTTP with TLS disabled. Signed disk uploads retain their authenticated capability
+exemption; bot-key endpoints exempt authenticated bots only.
+
 
 - Session-transfer auto-submit forms explicitly close their form tag; the pinned Rails
   reference omitted it.
