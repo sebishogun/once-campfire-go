@@ -19,7 +19,9 @@ var gzipPool = sync.Pool{New: func() any { writer, _ := gzip.NewWriterLevel(nil,
 
 // encoding delegates to the shared negotiation in internal/httpcompat so the
 // middleware and the application's pre-encoded responses always agree; see
-// httpcompat.Encoding.
+// httpcompat.Encoding. It is called directly, not through the public policy's
+// memo: the internal listener's Deflate path must not take a global lock for a
+// parse the selector already does cheaply.
 func encoding(header string) string { return httpcompat.Encoding(header) }
 
 // ResponseEncoding shares the application compressor's negotiation with the

@@ -37,7 +37,10 @@ func publicEncoding(r *http.Request) string {
 
 // encodingMemo caches the negotiation decision per Accept-Encoding header
 // value. The value is attacker-chosen, so the table is bounded: at the cap it
-// is cleared wholesale (a cold miss just re-parses that request's header).
+// is cleared wholesale (a cold miss just re-parses that request's header). Only
+// the public policy's own decision is memoized: the application's selector is
+// read directly (compression.go), so the internal listener's Deflate path
+// never takes this lock.
 var encodingMemo = struct {
 	mu    sync.Mutex
 	table map[string]string
@@ -145,11 +148,65 @@ type publicResponse struct {
 	jitter   []byte
 	err      error
 	final    bool
+	// seam and block are the precomposed surfaces the front's bypass path
+	// installs (precomposed.go): the seam when the chain has an emitter
+	// downstream, the blocking surface when it has none but this wrapper would
+	// otherwise advertise one. They live inside the wrapper — allocated per
+	// request anyway — so neither costs an allocation, and the zero values are
+	// never used.
+	seam  seamWriter
+	block sealedWriter
 }
 
 // markFinal is the cache's fast-lane signal: the response that follows is a
 // recorded replay with its encoding and headers already settled.
 func (w *publicResponse) markFinal() { w.final = true }
+
+// FramePrecomposed implements the web layer's precomposed gate (the method is
+// exported because an interface method cannot be satisfied from another package
+// otherwise): it answers, for a response whose body carries contentEncoding
+// ("" for identity), whether this policy is a pass-through and the response may
+// therefore be framed.
+//
+// The answer is about the response, not about a negotiation the front would
+// have to predict: WriteHeader passes a body through untouched whenever it
+// carries a Content-Encoding of its own, and a policy that selected nothing
+// never compresses. Only an identity body on a request the policy selected a
+// coding for would be transformed — and there the map path must serve it, so
+// the policy's own compression (and its framing, jitter and 406 policy) runs.
+// This is what keeps a zstd-preferring client's already-encoded zstd response
+// on the lane while its identity response stays on the map path.
+func (w *publicResponse) FramePrecomposed(contentEncoding string) bool {
+	return contentEncoding != "" || w.selected == ""
+}
+
+// WritePrecomposed implements the front's precomposed seam on the compression
+// policy: the application hands the loop a finished head block and body, and
+// the wrapper contributes the one header line its WriteHeader contributes to
+// every response it sees — Vary: Accept-Encoding — in the map path's sorted
+// position, then forwards to the next receiver. The application frames only
+// responses this policy is a pass-through for (framePrecomposed), so there is
+// nothing else to apply.
+//
+// Encoding needs no work here: the application pre-encodes the recorded pages
+// (its Content-Encoding is in the block), and WriteHeader's policy is a
+// pass-through for a response that already carries one. The line is inserted
+// only when the block lacks it, which is the case for the 304 block (the 200
+// block carries it), so the emitted head stays exactly the map path's.
+func (w *publicResponse) WritePrecomposed(status int, head []byte, body [][]byte) error {
+	w.status = status
+	head = insertHeadLine(head, "Vary", "Accept-Encoding")
+	receiver := findPrecomposedReceiver(w.ResponseWriter)
+	if receiver == nil {
+		return nil
+	}
+	return receiver.WritePrecomposed(status, head, body)
+}
+
+// forwardsPrecomposed marks the wrapper as a policy forwarder, not an emitter:
+// a chain that ends here (a net/http target listener behind PublicCompression)
+// cannot serve the lane, so Cache.Handler keeps the opaque capture.
+func (w *publicResponse) forwardsPrecomposed() {}
 
 func (w *publicResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *publicResponse) WriteHeader(status int) {

@@ -208,15 +208,22 @@ type recordResponse struct {
 	// form (the recorded bytes would not be the wire bytes) and for captures
 	// that do not participate in the lane.
 	wireHeader http.Header
+	// seam is this capture's precomposed-forwarding view, installed by Handler
+	// when the front can complete a precomposed response (precomposed.go). It
+	// lives inside the capture — which is allocated per miss anyway — so the
+	// transparent writer costs no allocation of its own; the zero value is
+	// never used (Handler installs it only after the gate passes).
+	seam captureWriter
 }
 
-// Unwrap deliberately does NOT exist on this wrapper. The web layer's
-// precomposed-receiver lookup walks Unwrap chains, and this wrapper sits
-// between the public response policy and the application on every public
-// miss: were it transparent, a fastserve public listener would let an
-// application precomposed write bypass the front cache entirely (its X-Cache
-// marker and the capture above). Keeping it opaque pins the public chain's
-// semantics; the internal listener has no wrapper here and is unaffected.
+// recordResponse itself has no Unwrap: it stays opaque, so a chain the front
+// cannot complete a precomposed response for (no emitter downstream, a
+// transforming response policy, the synthetic fixed-route fill over a
+// captureSink) keeps the application on the byte-identical map path. When it
+// can, Handler installs captureWriter (precomposed.go), which is the same
+// bookkeeping plus the precomposed seam and is the only front wrapper the web
+// layer's receiver walk passes through. See precomposed.go for the gate and
+// why the front's bookkeeping stays exact.
 
 func (w *recordResponse) WriteHeader(status int) {
 	if w.status != 0 {
@@ -229,9 +236,17 @@ func (w *recordResponse) WriteHeader(status int) {
 	} else if w.ttl > 0 {
 		w.Header().Del("Set-Cookie")
 	}
-	w.header = w.Header().Clone()
+	// Both header snapshots below exist only for a capture that can be stored.
+	// An uncacheable response — every public application page, whose
+	// Cache-Control is private — skips the map clone entirely: the captured
+	// header map is never read, so cloning it was pure per-request work (the
+	// largest single allocation in the capture path for a cookie-heavy page).
+	stored := w.ttl > 0
+	if stored {
+		w.header = w.Header().Clone()
+	}
 	w.ResponseWriter.WriteHeader(status)
-	if w.ttl <= 0 && !w.captureAlways {
+	if !stored {
 		return
 	}
 	// Post-policy snapshot for the recorded-replay lane (see wireHeader).
@@ -281,7 +296,7 @@ func (c *Cache) Handler(next http.Handler) http.Handler {
 		eligible := (r.Method == "GET" || r.Method == "HEAD") && r.Header.Get("Upgrade") == "" && r.Header.Get("Range") == "" && len(r.URL.RequestURI()) <= 2048
 		if !eligible || c.capacity <= 0 || c.maxItem <= 0 {
 			w.Header().Set("X-Cache", "bypass")
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(bypassWriter(w), r)
 			return
 		}
 		// Fixed routes replay a captured response instead of the application;
@@ -302,7 +317,7 @@ func (c *Cache) Handler(next http.Handler) http.Handler {
 		w.Header().Set("X-Cache", "miss")
 		fixed := c.FixedRoutes && fixedCandidate(r) && !c.fixedFailed
 		capture := &recordResponse{ResponseWriter: w, max: c.maxItem, captureAlways: fixed}
-		next.ServeHTTP(capture, r)
+		next.ServeHTTP(captureWriterFor(capture), r)
 		if capture.status == 0 {
 			capture.WriteHeader(200)
 		}
