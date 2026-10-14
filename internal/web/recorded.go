@@ -87,6 +87,9 @@ func (s *Server) messageListIdentity(ctx context.Context, messages []database.Me
 // being assembled, the compression would be discarded immediately, so it is
 // skipped.
 func (s *Server) recordedMessageList(ctx context.Context, messages []database.Message, needGzip, needZstd bool) (recordedPayload, error) {
+	if s.beforeRecordedPrepare != nil {
+		s.beforeRecordedPrepare()
+	}
 	if !s.recordedPieces {
 		entry, err := s.messageList(ctx, messages)
 		return recordedPayload{fragment: entry}, err
@@ -110,7 +113,7 @@ func (s *Server) recordedMessageList(ctx context.Context, messages []database.Me
 	if needGzip || s.pieces.Enabled() {
 		fragment = compressFragment(raw)
 	}
-	if s.zstdPieces && (needZstd || s.pieces.Enabled()) {
+	if s.zstdPieces && needZstd {
 		zstdMember = compressZstd(raw)
 	}
 	if !cacheable {

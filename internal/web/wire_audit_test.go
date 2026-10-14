@@ -132,36 +132,38 @@ func TestPrecomposedUnreadBodyParity(t *testing.T) {
 		}
 		return maskDate(wire)
 	}
-	for _, path := range []string{fmt.Sprintf("/rooms/%d", room), fmt.Sprintf("/rooms/%d/messages", room), "/searches?q=recorded"} {
+	for _, path := range []string{fmt.Sprintf("/rooms/%d", room), fmt.Sprintf("/rooms/%d/messages", room), "/searches?q=recorded", "/users/me/sidebar"} {
 		for _, encoding := range []string{"identity", "gzip", "zstd, gzip;q=0.5"} {
 			warm := recordedGet(t, client, std, path, encoding, "", cookie)
 			for _, conditional := range []bool{false, true} {
-				for _, mode := range []string{"fixed", "chunked", "expect"} {
-					t.Run(fmt.Sprintf("%s/%s/%v/%s", path, encoding, conditional, mode), func(t *testing.T) {
-						body := strings.Repeat("x", 300<<10)
-						framing := fmt.Sprintf("Content-Length: %d\r\n", len(body))
-						if mode == "chunked" {
-							framing = "Transfer-Encoding: chunked\r\n"
-							body = fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body)
-						}
-						if mode == "expect" {
-							framing += "Expect: 100-continue\r\n"
-						}
-						condition := ""
-						if conditional {
-							condition = "If-None-Match: " + warm.etag + "\r\n"
-						}
-						request := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: campfire.test\r\nCookie: session_token=%s; last_room=%d\r\nAccept-Encoding: %s\r\n%s%s\r\n%sGET /second HTTP/1.1\r\nHost: campfire.test\r\nConnection: close\r\n\r\n", path, cookie.Value, room, encoding, condition, framing, body)
-						ownedCalls.Store(0)
-						stdCalls.Store(0)
-						got, want := send(t, ownedAddr, request), send(t, stdAddr, request)
-						if !bytes.Equal(got, want) {
-							t.Errorf("wire mismatch: owned=%q standard=%q", got[:min(700, len(got))], want[:min(700, len(want))])
-						}
-						if ownedCalls.Load() != stdCalls.Load() {
-							t.Errorf("second handler: owned=%d standard=%d", ownedCalls.Load(), stdCalls.Load())
-						}
-					})
+				for _, bodySize := range []int{1024, 300 << 10} {
+					for _, mode := range []string{"fixed", "chunked", "expect"} {
+						t.Run(fmt.Sprintf("%s/%s/%v/%s/%d", path, encoding, conditional, mode, bodySize), func(t *testing.T) {
+							body := strings.Repeat("x", bodySize)
+							framing := fmt.Sprintf("Content-Length: %d\r\n", len(body))
+							if mode == "chunked" {
+								framing = "Transfer-Encoding: chunked\r\n"
+								body = fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body)
+							}
+							if mode == "expect" {
+								framing += "Expect: 100-continue\r\n"
+							}
+							condition := ""
+							if conditional {
+								condition = "If-None-Match: " + warm.etag + "\r\n"
+							}
+							request := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: campfire.test\r\nCookie: session_token=%s; last_room=%d\r\nAccept-Encoding: %s\r\n%s%s\r\n%sGET /second HTTP/1.1\r\nHost: campfire.test\r\nConnection: close\r\n\r\n", path, cookie.Value, room, encoding, condition, framing, body)
+							ownedCalls.Store(0)
+							stdCalls.Store(0)
+							got, want := send(t, ownedAddr, request), send(t, stdAddr, request)
+							if !bytes.Equal(got, want) {
+								t.Errorf("wire mismatch: owned=%q standard=%q", got, want)
+							}
+							if ownedCalls.Load() != stdCalls.Load() {
+								t.Errorf("second handler: owned=%d standard=%d", ownedCalls.Load(), stdCalls.Load())
+							}
+						})
+					}
 				}
 			}
 		}
@@ -215,15 +217,43 @@ func TestFramedSecurityHeadersStayOutOfMap(t *testing.T) {
 
 func TestFramingGateFallbackRetainsSecurityHeaders(t *testing.T) {
 	app, _, _, _, _, _ := testRecordedPair(t)
-	plain := httptest.NewRecorder()
-	app.ServeHTTP(plain, httptest.NewRequest("GET", "/up", nil))
-	framed := failingPrecomposedWriter{httptest.NewRecorder()}
-	app.ServeHTTP(&framed, httptest.NewRequest("GET", "/up", nil))
-	for key, values := range plain.Header() {
-		if strings.Join(values, ",") != strings.Join(framed.Header().Values(key), ",") {
-			t.Errorf("fallback lost %s: %v vs %v", key, values, framed.Header().Values(key))
-		}
+	for _, proxy := range []string{"", "X-Forwarded-For: 198.51.100.20\r\nClient-IP: 203.0.113.1\r\n"} {
+		t.Run(fmt.Sprintf("proxy=%t", proxy != ""), func(t *testing.T) {
+			var wires [2][]byte
+			for i, enabled := range []bool{false, true} {
+				var handler http.Handler = app
+				if !enabled {
+					handler = hidePrecomposed(handler)
+				}
+				_, addr := serveLoop(t, handler)
+				wires[i] = auditWire(t, addr, "GET /up HTTP/1.1\r\nHost: campfire.test\r\nConnection: close\r\n"+proxy+"\r\n")
+			}
+			if !bytes.Equal(wires[0], wires[1]) {
+				t.Fatalf("unframed=%q framed=%q", wires[0], wires[1])
+			}
+			if proxy != "" && bytes.Contains(wires[0], []byte("X-Version:")) {
+				t.Fatalf("early error acquired application headers: %q", wires[0])
+			}
+		})
 	}
+}
+
+func auditWire(t *testing.T, addr, request string) []byte {
+	t.Helper()
+	c, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(4 * time.Second))
+	if _, err := io.WriteString(c, request); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return maskDate(wire)
 }
 
 func TestRejectedGenerationSkipsAdmissionWork(t *testing.T) {
@@ -277,6 +307,8 @@ func TestRecordedZstdRejectedFallback(t *testing.T) {
 	if _, err := app.DB.CreateMessage(context.Background(), user.ID, rooms[0].ID, "seed", "<p>recorded seed</p>", "recorded seed"); err != nil {
 		t.Fatal(err)
 	}
+	var preparations atomic.Int64
+	app.beforeRecordedPrepare = func() { preparations.Add(1) }
 	for _, chain := range []func(http.Handler) http.Handler{publicReplayChain, productionReplayChain} {
 		server := httptest.NewServer(chain(app))
 		defer server.Close()
@@ -285,6 +317,7 @@ func TestRecordedZstdRejectedFallback(t *testing.T) {
 		for _, method := range []string{"GET", "HEAD"} {
 			for _, accept := range []string{"zstd;q=1, gzip;q=0, identity;q=0", "zstd;q=1, gzip;q=0, identity;q=0.5"} {
 				for i := 0; i < 2; i++ {
+					before := preparations.Load()
 					got, err := recordedFetchMethod(client, server, method, "/searches?q=recorded", accept, "", cookie)
 					if err != nil {
 						t.Fatal(err)
@@ -294,6 +327,9 @@ func TestRecordedZstdRejectedFallback(t *testing.T) {
 					}
 					if strings.HasSuffix(accept, "identity;q=0") && got.status != 406 {
 						t.Errorf("%s: status=%d, want 406", method, got.status)
+					}
+					if strings.HasSuffix(accept, "identity;q=0") && preparations.Load() != before {
+						t.Errorf("%s rejected coding reached compression/admission preparation %d times", method, preparations.Load()-before)
 					}
 					if strings.HasSuffix(accept, "identity;q=0.5") && got.status != 200 {
 						t.Errorf("%s: identity accepted, status=%d", method, got.status)

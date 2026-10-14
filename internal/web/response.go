@@ -62,6 +62,9 @@ type responseBuffer struct {
 	// head block); a request that later falls back to the map path restores
 	// them via restoreRecordedHeaders.
 	framed bool
+	// securityDeferred is set only when ServeHTTP reaches header initialization.
+	// Early errors must not acquire application headers at finish.
+	securityDeferred bool
 	// cachedMapBody marks a whole-response-cache hit whose stored response was
 	// a map-path render. The fresh map path leaves framing to the server (one
 	// body write), so the hit must not emit an explicit Content-Length either,
@@ -131,7 +134,7 @@ func (w *responseBuffer) finish(r *http.Request) {
 	// fallback validator can never be recomputed on a hit. The recorded paths
 	// set their own validator before finish and are skipped here.
 	if target == nil {
-		if w.framed && w.server != nil {
+		if w.securityDeferred && w.server != nil {
 			// The writer gate also covers redirects, errors and cache-hit
 			// fallbacks. Only a completed frame carries these headers itself.
 			w.server.restoreSecurityHeaders(w.Header())

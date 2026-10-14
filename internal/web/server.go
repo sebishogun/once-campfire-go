@@ -139,7 +139,9 @@ type Server struct {
 	// that a 304 never assembles a body. recordedShellFallbacks counts
 	// requests that fell back to the legacy render because the shell could not
 	// be split into pieces; recordedShellWarned fires the one-time warning.
-	recordedAssemblies     atomic.Int64
+	recordedAssemblies atomic.Int64
+	// Test hook at the preparation boundary, before compression or admission.
+	beforeRecordedPrepare  func()
 	recordedShellFallbacks atomic.Int64
 	recordedShellWarned    atomic.Bool
 	// responseReplays counts whole-response-cache hits emitted through the
@@ -530,6 +532,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("X-XSS-Protection", "0")
 		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+	} else {
+		buffered.securityDeferred = true
 	}
 	if r.Method != "GET" && r.Method != "HEAD" && !strings.HasPrefix(r.URL.Path, "/rails/active_storage/") {
 		banned, err := s.DB.BannedIP(r.Context(), remoteIP(r))
@@ -733,6 +737,10 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, sta
 			// One negotiation per request: recordedMessageList needs it for
 			// storage, writeRecordedPieces for the response form.
 			encoding = s.clientEncoding(r)
+			if encoding == "" {
+				w.WriteHeader(http.StatusNotAcceptable)
+				return
+			}
 			payload, listErr := s.recordedMessageList(r.Context(), raw, encoding == "gzip", s.zstdPieces && encoding == "zstd")
 			if listErr != nil {
 				s.fail(w, listErr)

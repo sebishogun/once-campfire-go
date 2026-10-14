@@ -201,6 +201,7 @@ func (b *responseBuffer) clearForPool() {
 	b.ResponseWriter = nil
 	b.arena = nil
 	b.framed = false
+	b.securityDeferred = false
 	b.recordedHead = nil
 	b.precomposed = false
 	b.recordedEtag = nil

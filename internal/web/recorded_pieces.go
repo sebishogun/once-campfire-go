@@ -249,6 +249,9 @@ func splitRecordedShell(rendered []byte, loadedMarker, messageMarker string) (sh
 // first fill of a page for one encoding does not compress the other member
 // needlessly.
 func (s *Server) shellPieces(p page, name string, needGzip, needZstd bool) (recordedShell, error) {
+	if s.beforeRecordedPrepare != nil {
+		s.beforeRecordedPrepare()
+	}
 	identity := recordedShellIdentity(name, p)
 	switch shell, status := s.loadShell(identity); status {
 	case shellHit:
@@ -290,7 +293,7 @@ func (s *Server) shellPieces(p page, name string, needGzip, needZstd bool) (reco
 		if needGzip || s.pieces.Enabled() {
 			fragment = compressFragment(layout.segments[i])
 		}
-		if s.zstdPieces && (needZstd || s.pieces.Enabled()) {
+		if s.zstdPieces && needZstd {
 			zstdMember = compressZstd(layout.segments[i])
 		}
 		entry, _ := s.pieces.PutDigestZstd(key, layout.segments[i], fragment, zstdMember)
@@ -360,39 +363,29 @@ func (s *Server) loadShell(identity [32]byte) (recordedShell, shellStatus) {
 // no per-request header strings; every other path is byte-identical to the
 // map path.
 func (s *Server) writeRecordedPieces(w http.ResponseWriter, r *http.Request, status int, name string, p page, recorded recordedPayload, encoding string) (bool, error) {
+	// All valid shells have two or three segments. Browsers cannot consume
+	// the multi-frame zstd representation. Direct callers must apply the
+	// same usable-coding gate as render, before touching the shell cache.
+	if encoding == "zstd" {
+		encoding = clientContentEncoding(r, false)
+	}
+	if encoding == "" {
+		w.WriteHeader(http.StatusNotAcceptable)
+		return true, nil
+	}
 	payload := recorded.piece
 	if payload == nil {
 		s.recordedShellFallbacks.Add(1)
 		return false, nil
 	}
 	needGzip := encoding == "gzip"
-	needZstd := s.zstdPieces && encoding == "zstd"
-	shell, err := s.shellPieces(p, name, needGzip, needZstd)
+	shell, err := s.shellPieces(p, name, needGzip, false)
 	if err != nil {
 		s.recordedShellFallbacks.Add(1)
 		if s.recordedShellWarned.CompareAndSwap(false, true) {
 			slog.Warn("recorded response served by the legacy renderer", "name", name, "error", err)
 		}
 		return false, nil
-	}
-	// A cache filled before zstd frames were enabled may lack zstd frames.
-	// Chromium decodes only the first frame of a multi-frame zstd stream —
-	// the same probe that showed it decoding only the first gzip member — so
-	// a multi-piece zstd body would render the shell without its messages in
-	// browsers. These pages always assemble several pieces (shell segments
-	// plus the message payload), so renegotiate using gzip and identity for
-	// these shapes. A rejected coding is never a fallback. The frames stay in the cache
-	// for clients and shapes that assemble one frame, and piececache keeps
-	// the multi-frame assembly for the non-browser corpus. This is why
-	// CAMPFIRE_RECORDED_ZSTD defaults off (see server.go).
-	if encoding == "zstd" && (!piecesCarryZstd(shell, payload) || zstdMultiPiece(shell)) {
-		encoding = clientContentEncoding(r, false)
-		if encoding == "" {
-			w.WriteHeader(http.StatusNotAcceptable)
-			return true, nil
-		}
-		needGzip = encoding == "gzip"
-		needZstd = false
 	}
 
 	// Stable pieces in output order, minus the per-request loadedAt, are what
@@ -797,28 +790,6 @@ func encodedTotal(parts []*piececache.Entry, encoding string) int {
 	return total
 }
 
-// piecesCarryZstd reports whether every cache-stable piece of this response
-// has a zstd frame, so a zstd body can be assembled from them.
-func piecesCarryZstd(shell recordedShell, payload *piececache.Entry) bool {
-	for i := 0; i < shell.count; i++ {
-		segment := shell.segments[i]
-		if len(segment.Raw) > 0 && len(segment.Zstd) == 0 {
-			return false
-		}
-	}
-	return len(payload.Raw) == 0 || len(payload.Zstd) > 0
-}
-
-// zstdMultiPiece reports whether the response assembles more than one piece.
-// The multi-frame zstd wire form is fine for the loadgen and curl, but
-// Chromium decodes only the first frame, so a multi-piece zstd body must
-// never be served. Every shell has at least one cut (count ≥ 2), so on these
-// pages every zstd request is multi-piece, but the rule is written generally:
-// a hypothetical single-piece response could still use its one zstd frame.
-func zstdMultiPiece(shell recordedShell) bool {
-	return shell.count > 1
-}
-
 // findResponseBuffer returns the per-request responseBuffer behind w's wrapper
 // chain, or nil when the response is not buffered.
 func findResponseBuffer(w http.ResponseWriter) *responseBuffer {
@@ -875,12 +846,12 @@ func addVaryAcceptEncoding(h http.Header) {
 }
 
 // clientEncoding selects the wire encoding for this request's pre-encoded
-// recorded response: "gzip", "zstd" or "identity", or "" when the client
-// accepts nothing (the front middleware answers 406 on the identity path).
-// When zstd members are disabled the selector returns exactly what
-// httpcompat.Encoding returns (clientAcceptsGzip's result).
+// recorded response: "gzip", "identity", or "" when neither is accepted.
+// Every valid page shell is multi-piece; multi-frame zstd is not browser
+// compatible. Negotiate only usable codings before preparing any pieces,
+// even when the experimental zstd flag is enabled.
 func (s *Server) clientEncoding(r *http.Request) string {
-	return clientContentEncoding(r, s.zstdPieces)
+	return clientContentEncoding(r, false)
 }
 
 // clientAcceptsGzip reports whether this request may receive a pre-encoded

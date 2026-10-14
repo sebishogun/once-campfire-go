@@ -3,10 +3,12 @@ package fastserve
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -155,35 +157,77 @@ func TestEmptyFlushHeaders(t *testing.T) {
 
 func TestBufferBoundaryWire(t *testing.T) {
 	for _, sizes := range [][]int{{2047}, {2048}, {2049}, {1024, 1024}, {1000, 2000}} {
-		for _, stringWrite := range []bool{false, true} {
-			t.Run(fmt.Sprint(sizes, stringWrite), func(t *testing.T) {
-				h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-					for _, n := range sizes {
-						p := strings.Repeat("x", n)
-						if stringWrite {
-							io.WriteString(w, p)
-						} else {
-							w.Write([]byte(p))
+		for _, encoding := range []string{"identity", "gzip"} {
+			for _, stringWrite := range []bool{false, true} {
+				t.Run(fmt.Sprint(sizes, stringWrite, encoding), func(t *testing.T) {
+					h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+						var dst io.Writer = w
+						if encoding == "gzip" {
+							w.Header().Set("Content-Encoding", "gzip")
+							compressed := gzip.NewWriter(w)
+							defer compressed.Close()
+							dst = compressed
+						}
+						for _, n := range sizes {
+							p := strings.Repeat("x", n)
+							if stringWrite {
+								io.WriteString(dst, p)
+							} else {
+								dst.Write([]byte(p))
+							}
+						}
+					})
+					req := []byte("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nAccept-Encoding: " + encoding + "\r\n\r\n")
+					want := removeDate(rawExchange(t, startOracle(t, h, nil), req))
+					got := removeDate(rawExchange(t, startFast(t, h, nil), req))
+					if !bytes.Equal(want, got) {
+						t.Fatalf("wire mismatch: oracle %d bytes, fast %d bytes; oracle prefix=%q fast prefix=%q", len(want), len(got), want[:min(160, len(want))], got[:min(160, len(got))])
+					}
+					{
+						capture := httptest.NewRecorder()
+						request := httptest.NewRequest("GET", "/", nil)
+						request.Header.Set("Accept-Encoding", encoding)
+						h.ServeHTTP(capture, request)
+						var head bytes.Buffer
+						capture.Header().Write(&head)
+						recorded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							w.(*response).WriteRecorded(200, head.Bytes(), capture.Body.Bytes())
+						})
+						replay := removeDate(rawExchange(t, startFast(t, recorded, nil), req))
+						// WriteRecorded deliberately replays a single byte-slice write,
+						// not the original sequence of Write/WriteString calls. Pin its
+						// raw bytes against that net/http contract as well.
+						single := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							for key, values := range capture.Header() {
+								w.Header()[key] = values
+							}
+							w.Write(capture.Body.Bytes())
+						})
+						oneWrite := removeDate(rawExchange(t, startOracle(t, single, nil), req))
+						if !bytes.Equal(oneWrite, replay) {
+							t.Fatalf("single-write/recorded mismatch: oracle=%q recorded=%q", oneWrite, replay)
+						}
+						chunkDelta := encoding == "identity" && ((len(sizes) == 1 && sizes[0] == 2049 && stringWrite) || len(sizes) == 2 && sizes[0] == 1000)
+						if !chunkDelta && !bytes.Equal(got, replay) {
+							t.Fatalf("fresh/recorded mismatch: fresh=%q recorded=%q", got, replay)
+						}
+						if chunkDelta {
+							freshHead, _, _ := bytes.Cut(got, []byte("\r\n\r\n"))
+							replayHead, _, _ := bytes.Cut(replay, []byte("\r\n\r\n"))
+							fresh, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(got)), nil)
+							if err != nil {
+								t.Fatal(err)
+							}
+							body, err := io.ReadAll(fresh.Body)
+							fresh.Body.Close()
+							if err != nil || !bytes.Equal(body, capture.Body.Bytes()) || !bytes.Equal(freshHead, replayHead) {
+								t.Fatalf("delta exceeds chunk boundaries: fresh=%q recorded=%q err=%v", got, replay, err)
+							}
 						}
 					}
 				})
-				req := []byte("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-				want := removeDate(rawExchange(t, startOracle(t, h, nil), req))
-				got := removeDate(rawExchange(t, startFast(t, h, nil), req))
-				if !bytes.Equal(want, got) {
-					t.Fatalf("wire mismatch: oracle %d bytes, fast %d bytes; oracle prefix=%q fast prefix=%q", len(want), len(got), want[:min(160, len(want))], got[:min(160, len(got))])
-				}
-				if len(sizes) == 1 && !stringWrite {
-					recorded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						w.(*response).WriteRecorded(200, []byte("Content-Type: text/plain; charset=utf-8\r\n"), bytes.Repeat([]byte("x"), sizes[0]))
-					})
-					replay := removeDate(rawExchange(t, startFast(t, recorded, nil), req))
-					if !bytes.Equal(got, replay) {
-						t.Fatalf("fresh/recorded framing mismatch")
-					}
-				}
-			})
+			}
 		}
 	}
 }

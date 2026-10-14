@@ -107,9 +107,19 @@ clients still get the raw pieces with no copy. Setting it
 `CAMPFIRE_RECORDED_ZSTD` (default `off`; same value shapes and warning policy) enables the zstd
 frame variant of cached pieces. It is off by default for the same browser reason: Chromium
 decodes only the first frame of a multi-frame zstd stream, and every piece-path page assembles
-several pieces, so with the flag on, multi-piece responses are served as the single-member gzip
-splice and only single-frame shapes would use zstd; the multi-frame zstd assembly remains in
+several pieces. Recorded pages negotiate gzip or identity before preparing payloads or shells,
+even with the flag on; rejecting both returns 406 without piece preparation. They do not
+precompute unreachable zstd frames. The multi-frame zstd assembly remains in
 `internal/piececache` for non-browser clients and the corpus that exercises it.
+
+Raw-wire tests mask only Date. `WriteRecorded` intentionally replays one byte-slice write,
+not the original write history: a 2049-byte `WriteString` emits chunks `800` + `1`, and
+1000+2000 split writes emit `800` + `3b8`, while replay emits `801` and `bb8` respectively
+(hexadecimal chunk lengths). Headers and decoded bodies match. The replay bytes are checked
+against a single-write net/http oracle; fresh split-write bytes against a split-write oracle.
+Page coverage includes HEAD/304, identity/gzip and zstd negotiation, cold/warm caches,
+alternate Host/forwarded origin, and bodies below/above the request-drain budget. This is
+Go loop/map/replay parity coverage, not a new Rails or browser parity claim.
 `CAMPFIRE_FASTDB` (default `on`; also accepts `true`/`1` and `off`/`false`/`0`, warning on anything else)
 routes the hot read paths — room pages, message pages, the session lookup in `auth`, the sidebar
 (rooms, direct-room members, placeholders), the search FTS scan, and message view assembly (room,
