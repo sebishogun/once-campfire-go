@@ -554,29 +554,33 @@ func (d *DB) AuthorizedSessions(
 	return result, rows.Err()
 }
 
-// RoomMembersAmong returns which of userIDs are currently members of room, in
-// one snapshot. It is the membership recheck a publication runs after its
-// candidate read: the candidate read established membership at an earlier
-// instant, so a member removed in between must be recognised here and skipped
-// rather than notified. json_each keeps the SQL shape stable and avoids
-// SQLite's placeholder limit.
-func (d *DB) RoomMembersAmong(ctx context.Context, room int64, userIDs []int64) (map[int64]struct{}, error) {
+// RoomMembersAmong appends to dst the members of room among userIDs, in one
+// snapshot, and returns the extended slice. It is the membership recheck a
+// publication runs after its candidate read: the candidate read established
+// membership at an earlier instant, so a member removed in between must be
+// recognised here and skipped rather than notified. json_each keeps the SQL
+// shape stable and avoids SQLite's placeholder limit.
+//
+// The result is a caller-owned slice the caller sorts and binary-searches, not
+// a map built per call: the recheck runs on every unread bump, and the map was
+// its only avoidable container (the row destinations and the JSON bind string
+// are database/sql's and the encoder's).
+func (d *DB) RoomMembersAmong(ctx context.Context, dst []int64, room int64, userIDs []int64) ([]int64, error) {
 	raw, err := json.Marshal(userIDs)
 	if err != nil {
-		return nil, err
+		return dst, err
 	}
 	rows, err := d.Read.QueryContext(ctx, "SELECT user_id FROM memberships WHERE room_id=? AND user_id IN (SELECT value FROM json_each(?))", room, string(raw))
 	if err != nil {
-		return nil, err
+		return dst, err
 	}
 	defer rows.Close()
-	result := make(map[int64]struct{}, len(userIDs))
 	for rows.Next() {
 		var user int64
 		if err := rows.Scan(&user); err != nil {
-			return nil, err
+			return dst, err
 		}
-		result[user] = struct{}{}
+		dst = append(dst, user)
 	}
-	return result, rows.Err()
+	return dst, rows.Err()
 }

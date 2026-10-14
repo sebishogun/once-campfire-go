@@ -64,25 +64,30 @@ func signedAliasIdentifier(t testing.TB, secrets *rails.Secrets, stream string) 
 	return string(raw)
 }
 
-// aliasUnreadSubscriber registers a simulated client whose subscription is the
-// signed Turbo::StreamsChannel alias for stream, resolved by Hub.subscription
-// exactly as Serve resolves it. The subscribing client's user is deliberately
-// independent of the stream's target user.
-func aliasUnreadSubscriber(t testing.TB, hub *Hub, db *database.DB, secrets *rails.Secrets, user database.User, stream string) (*client, string) {
+// aliasUnreadSubscriber registers a simulated client whose subscriptions are
+// the signed Turbo::StreamsChannel aliases for streams, each resolved by
+// Hub.subscription exactly as Serve resolves it. The subscribing client's user
+// is deliberately independent of the streams' target users.
+func aliasUnreadSubscriber(t testing.TB, hub *Hub, db *database.DB, secrets *rails.Secrets, user database.User, streams ...string) (*client, []string) {
 	t.Helper()
 	token, err := db.StartSession(context.Background(), user.ID, "alias", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	identifier := signedAliasIdentifier(t, secrets, stream)
-	c := simulateClient(t, user, token, identifier, subscription{})
-	sub, valid := hub.subscription(context.Background(), c, identifier)
-	if !valid {
-		t.Fatalf("signed alias for %q was rejected", stream)
+	c := simulateClient(t, user, token, "", subscription{})
+	c.subscriptions = map[string]subscription{}
+	identifiers := make([]string, 0, len(streams))
+	for _, stream := range streams {
+		identifier := signedAliasIdentifier(t, secrets, stream)
+		sub, valid := hub.subscription(context.Background(), c, identifier)
+		if !valid {
+			t.Fatalf("signed alias for %q was rejected", stream)
+		}
+		c.subscriptions[identifier] = sub
+		identifiers = append(identifiers, identifier)
 	}
-	c.subscriptions[identifier] = sub
 	hub.register(c)
-	return c, identifier
+	return c, identifiers
 }
 
 // strayUnreadSubscriber registers a simulated client whose user is NOT a
@@ -451,8 +456,10 @@ func TestUnreadBumpSignedAliasParity(t *testing.T) {
 	stream := unreadStreamName(member.ID)
 	canonical, _ := unreadSubscriber(t, hub, db, member)
 	canonicalID := unreadIdentifier
-	alias, aliasID := aliasUnreadSubscriber(t, hub, db, secrets, member, stream)
-	foreignAlias, foreignAliasID := aliasUnreadSubscriber(t, hub, db, secrets, outsider, stream)
+	alias, aliasIDs := aliasUnreadSubscriber(t, hub, db, secrets, member, stream)
+	aliasID := aliasIDs[0]
+	foreignAlias, foreignAliasIDs := aliasUnreadSubscriber(t, hub, db, secrets, outsider, stream)
+	foreignAliasID := foreignAliasIDs[0]
 
 	// The generic publication to the same stream name is the control: the bump
 	// must reach the same clients under the same identifiers.
@@ -485,6 +492,72 @@ func TestUnreadBumpSignedAliasParity(t *testing.T) {
 	expectSilent(t, alias)
 	expectBumpFor(t, ctx, canonical, canonicalID, pair.ID)
 	expectBumpFor(t, ctx, foreignAlias, foreignAliasID, pair.ID)
+}
+
+// TestUnreadBumpNoncanonicalAliasParity pins stream identity exactly. ParseInt
+// accepts `01` and `+1`, but the generic publication matches the exact stream
+// name, so a signed alias for `user_01_unreads` or `user_+1_unreads` is a
+// different subscription from `user_1_unreads`: the bump must not reach it
+// (which would expand user 1's recipient set beyond what the generic path
+// delivers to), while the alias stays a perfectly valid generic subscription
+// to its own name. Each client is checked for the exact identifier and the
+// exact frame count of both publications.
+func TestUnreadBumpNoncanonicalAliasParity(t *testing.T) {
+	hub, db, owner, _, secrets := hubFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	member, err := db.CreateUser(ctx, "Member", "member@test", "digest", "", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := db.CreateRoom(ctx, owner.ID, "Rooms::Closed", "Pair", []int64{owner.ID, member.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalStream := unreadStreamName(member.ID)
+	zeroStream := fmt.Sprintf("user_0%d_unreads", member.ID)
+	plusStream := fmt.Sprintf("user_+%d_unreads", member.ID)
+
+	canonicalAlias, canonicalIDs := aliasUnreadSubscriber(t, hub, db, secrets, member, canonicalStream)
+	zeroAlias, zeroIDs := aliasUnreadSubscriber(t, hub, db, secrets, member, zeroStream)
+	plusAlias, plusIDs := aliasUnreadSubscriber(t, hub, db, secrets, member, plusStream)
+	// One client holding the canonical name and a noncanonical one together.
+	both, bothIDs := aliasUnreadSubscriber(t, hub, db, secrets, member, canonicalStream, zeroStream)
+	bothCanonicalID, bothZeroID := bothIDs[0], bothIDs[1]
+	payload := map[string]any{"roomId": pair.ID}
+
+	// 1. The bump: exactly the canonical subscriptions, one frame each.
+	if err := hub.PublishUnreadBump(pair.ID, unreadBudget); err != nil {
+		t.Fatal(err)
+	}
+	expectBumpFor(t, ctx, canonicalAlias, canonicalIDs[0], pair.ID)
+	expectBumpFor(t, ctx, both, bothCanonicalID, pair.ID)
+	expectSilent(t, zeroAlias)
+	expectSilent(t, plusAlias)
+	expectNone(t, both) // the noncanonical identifier got no frame
+
+	// 2. The generic publication to the canonical name: the same set.
+	hub.PublishStream(ctx, canonicalStream, payload)
+	expectBumpFor(t, ctx, canonicalAlias, canonicalIDs[0], pair.ID)
+	expectBumpFor(t, ctx, both, bothCanonicalID, pair.ID)
+	expectSilent(t, zeroAlias)
+	expectSilent(t, plusAlias)
+	expectNone(t, both)
+
+	// 3. Generic acceptance is unchanged: each noncanonical alias still
+	// receives a publication to its own exact name, and only that one.
+	hub.PublishStream(ctx, zeroStream, payload)
+	expectBumpFor(t, ctx, zeroAlias, zeroIDs[0], pair.ID)
+	expectBumpFor(t, ctx, both, bothZeroID, pair.ID)
+	expectSilent(t, canonicalAlias)
+	expectSilent(t, plusAlias)
+	expectNone(t, both)
+
+	hub.PublishStream(ctx, plusStream, payload)
+	expectBumpFor(t, ctx, plusAlias, plusIDs[0], pair.ID)
+	expectSilent(t, canonicalAlias)
+	expectSilent(t, zeroAlias)
+	expectNone(t, both)
 }
 
 // TestUnreadBumpSignedAliasSocketLifecycle drives a signed alias through the

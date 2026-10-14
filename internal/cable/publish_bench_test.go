@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/basecamp/once-campfire-go/internal/database"
 )
@@ -88,8 +89,15 @@ func BenchmarkUnreadBumpFanout(b *testing.B) {
 // scaling: a fixed two-member target room, one subscribed member, and 0/100/
 // 10,000 unread subscribers whose users are members of no room the post
 // touches. The bump's cost must be flat in that last number — an unrelated
-// subscriber contributes no token, no row and no lock-held work — while the
-// pre-Lever-5 shape would have published once per unrelated subscriber too.
+// subscriber contributes no token, no row and no lock-held work.
+//
+// The shape being compared against is oldUnreadFanout above, which iterated
+// the ROOM'S MEMBERS, not the server's unread subscribers: it is unaffected by
+// unrelated subscribers too, and it paid one publish per room member instead
+// (12.4 KB/op and 816 allocs/op against the bump's 33.8 KB and 689 in
+// BenchmarkUnreadBumpFanout's 100-member room). What this benchmark pins is
+// that the new candidate read did not trade that for a dependence on the
+// server's subscriber count, which the earlier global-scan revision did.
 // Run with the same pinned-CPU command as BenchmarkUnreadBumpFanout.
 func BenchmarkUnreadBumpUnrelatedSubscribers(b *testing.B) {
 	for _, straysN := range []int{0, 100, 10000} {
@@ -118,6 +126,113 @@ func BenchmarkUnreadBumpUnrelatedSubscribers(b *testing.B) {
 				memberC.q.clear()
 				hub.PublishUnreadBump(pair.ID, unreadBudget)
 			}
+		})
+	}
+}
+
+// BenchmarkUnreadBumpFanoutAB is the alternating-order A/B for the same room:
+// the bump and the shape it replaced run back to back inside one loop, so a
+// drifting machine moves both and the pair stays comparable — the fixed
+// bump-then-member-fanout order of BenchmarkUnreadBumpFanout cannot show that.
+// Both means are reported as metrics (ns/op-bump, ns/op-member-fanout);
+// allocations are pinned by the per-shape benchmarks, which are deterministic
+// and order-independent.
+func BenchmarkUnreadBumpFanoutAB(b *testing.B) {
+	for _, subs := range []int{1, 100} {
+		b.Run("subs="+strconv.Itoa(subs), func(b *testing.B) {
+			hub, db, owner, roomID, _ := hubFixture(b)
+			ctx := context.Background()
+			users := []database.User{owner}
+			for i := 1; i < 100; i++ {
+				u, err := db.CreateUser(ctx, fmt.Sprintf("Member%d", i), fmt.Sprintf("m%d@test", i), "digest", "", 0, nil)
+				if err != nil {
+					b.Fatal(err)
+				}
+				users = append(users, u)
+			}
+			clients := make([]*client, 0, subs)
+			for i := 0; i < subs; i++ {
+				c, _ := unreadSubscriber(b, hub, db, users[i])
+				clients = append(clients, c)
+			}
+			drain := func() {
+				for _, c := range clients {
+					c.q.clear()
+				}
+			}
+			hub.PublishUnreadBump(roomID, unreadBudget)
+			oldUnreadFanout(hub, ctx, roomID)
+			drain()
+			b.ResetTimer()
+			var bumpNanos, fanoutNanos int64
+			for i := 0; i < b.N; i++ {
+				drain()
+				start := time.Now()
+				hub.PublishUnreadBump(roomID, unreadBudget)
+				mid := time.Now()
+				oldUnreadFanout(hub, ctx, roomID)
+				end := time.Now()
+				bumpNanos += mid.Sub(start).Nanoseconds()
+				fanoutNanos += end.Sub(mid).Nanoseconds()
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(bumpNanos)/float64(b.N), "ns/op-bump")
+			b.ReportMetric(float64(fanoutNanos)/float64(b.N), "ns/op-member-fanout")
+		})
+	}
+}
+
+// BenchmarkUnreadEligibilityReads isolates the two eligibility reads the bump
+// runs after its candidate snapshot, so each one's byte cost is attributable:
+// the session check over n live tokens and the membership recheck over n
+// targets. Run with the same pinned-CPU command as the fanout benchmarks.
+func BenchmarkUnreadEligibilityReads(b *testing.B) {
+	hub, db, owner, roomID, _ := hubFixture(b)
+	ctx := context.Background()
+	ids := []int64{owner.ID}
+	tokens := []string{}
+	token, err := db.StartSession(ctx, owner.ID, "eligibility", "127.0.0.1")
+	if err != nil {
+		b.Fatal(err)
+	}
+	tokens = append(tokens, token)
+	for i := 1; i < 100; i++ {
+		u, err := db.CreateUser(ctx, fmt.Sprintf("Member%d", i), fmt.Sprintf("m%d@test", i), "digest", "", 0, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		token, err := db.StartSession(ctx, u.ID, "eligibility", "127.0.0.1")
+		if err != nil {
+			b.Fatal(err)
+		}
+		ids = append(ids, u.ID)
+		tokens = append(tokens, token)
+	}
+	_ = hub
+	for _, n := range []int{1, 100} {
+		b.Run("n="+strconv.Itoa(n), func(b *testing.B) {
+			b.Run("sessions", func(b *testing.B) {
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if _, err := db.AuthorizedSessions(ctx, tokens[:n], 0); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			b.Run("membership", func(b *testing.B) {
+				// The pooled destination the bump uses: a slice the caller
+				// owns, reused across calls.
+				dst := make([]int64, 0, 64)
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					var err error
+					if dst, err = db.RoomMembersAmong(ctx, dst[:0], roomID, ids[:n]); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
 		})
 	}
 }

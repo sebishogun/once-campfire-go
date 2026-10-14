@@ -340,11 +340,19 @@ func unreadStreamName(user int64) string {
 	return "user_" + strconv.FormatInt(user, 10) + "_unreads"
 }
 
-// unreadStreamUser reports the target user of an unread stream name, and
-// whether the name is one at all. The target comes from the NAME, never from
-// the subscribing client: a signed alias may name another user's stream, and
-// the generic publish path delivers to it on the signed name's authority
+// unreadStreamUser reports the target user of a CANONICAL unread stream name,
+// and whether the name is one at all. The target comes from the NAME, never
+// from the subscribing client: a signed alias may name another user's stream,
+// and the generic publish path delivers to it on the signed name's authority
 // alone, so the unread bump must treat it as the same subscription.
+//
+// Canonical means exactly the spelling unreadStreamName produces. ParseInt
+// alone would also accept `+1`, `01` and `-1`, which are distinct stream names
+// the generic publication never matches: indexing them under user 1 would
+// deliver that user's room bumps to a subscription the generic path excludes,
+// expanding the recipient set and breaking stream-identity parity. The
+// round-trip against the builder is the whole rule, so a name is indexed only
+// when it is the name the publication can produce.
 func unreadStreamUser(stream string) (int64, bool) {
 	rest, ok := strings.CutPrefix(stream, "user_")
 	if !ok {
@@ -355,7 +363,7 @@ func unreadStreamUser(stream string) (int64, bool) {
 		return 0, false
 	}
 	user, err := strconv.ParseInt(rest, 10, 64)
-	if err != nil {
+	if err != nil || user <= 0 || unreadStreamName(user) != stream {
 		return 0, false
 	}
 	return user, true
@@ -1009,11 +1017,12 @@ type publishScratch struct {
 	recips  []recipient
 	tokens  []string
 	targets []int64
+	fresh   []int64
 }
 
 var publishScratchPool = sync.Pool{
 	New: func() any {
-		return &publishScratch{wrap: make([]byte, 0, 1024), recips: make([]recipient, 0, 64), tokens: make([]string, 0, 64), targets: make([]int64, 0, 64)}
+		return &publishScratch{wrap: make([]byte, 0, 1024), recips: make([]recipient, 0, 64), tokens: make([]string, 0, 64), targets: make([]int64, 0, 64), fresh: make([]int64, 0, 64)}
 	},
 }
 
@@ -1209,12 +1218,23 @@ func roomScope(room int64) string { return "room:" + strconv.FormatInt(room, 10)
 // read it always paid, then two bulk queries and one shared frame instead of a
 // publish, an authorization pass and a frame per member.
 //
-// That trade is not a blanket win in bytes: the bulk token encoding and the
-// authorization map cost more bytes than the per-member frames did at a
-// hundred subscribed members, while allocating fewer objects. It buys one
-// frame per identifier, one lock-free authorization pass and a candidate set
-// that cannot grow with unrelated subscribers; the byte-heavy step is
-// AuthorizedSessions, which every room broadcast shares.
+// That trade is not a blanket win in bytes: the bulk token encoding costs more
+// bytes than the per-member frames did at a hundred subscribed members, while
+// allocating fewer objects. It buys one frame per identifier, one authorization
+// pass outside the hub lock and a candidate set that cannot grow with unrelated
+// subscribers.
+//
+// Where the bytes go, measured (BenchmarkUnreadEligibilityReads, 100 tokens or
+// targets): the session check 23.7 KB/418 allocs, the membership recheck
+// 2.0 KB/114 allocs, on a 31.3 KB bump. The session check is AuthorizedSessions,
+// which every room broadcast shares; the membership recheck already appends
+// into a pooled caller-owned slice instead of building a map (4.4 KB -> 2.0 KB
+// at 100 targets). What is left in both is the JSON bind string and
+// database/sql's per-row heap destination (`go build -gcflags=-m` shows
+// `moved to heap: user` per row). Removing those needs caller-owned encoding
+// buffers and a bulk read lane of the shape internal/fastdb already uses, on
+// the shared authorization path as well; that rewrite is a documented
+// follow-up, not a claim.
 //
 // Eligibility is re-read, never cached, and the two failure modes are kept
 // apart:
@@ -1262,8 +1282,9 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	recipients := scratch.recips[:0]
 	tokens := scratch.tokens[:0]
 	targets := scratch.targets[:0]
+	fresh := scratch.fresh[:0]
 	defer func() {
-		scratch.wrap, scratch.recips, scratch.tokens, scratch.targets = wrap, recipients, tokens, targets
+		scratch.wrap, scratch.recips, scratch.tokens, scratch.targets, scratch.fresh = wrap, recipients, tokens, targets, fresh
 		publishScratchPool.Put(scratch)
 	}()
 	h.mu.RLock()
@@ -1319,14 +1340,17 @@ func (h *Hub) PublishUnreadBump(room int64, budget time.Duration) error {
 	}
 	// Membership eligibility, re-read now: a target removed from the room since
 	// the candidate read is skipped — no frame and no disconnect — because the
-	// candidate read happened earlier and cannot answer for the present.
-	still, err := h.db.RoomMembersAmong(ctx, room, targets)
+	// candidate read happened earlier and cannot answer for the present. The
+	// recheck's result goes into the pooled scratch and is sorted in place, so
+	// it allocates no result container of its own.
+	fresh, err = h.db.RoomMembersAmong(ctx, fresh, room, targets)
 	if err != nil {
 		return err
 	}
+	slices.Sort(fresh)
 	kept = recipients[:0]
 	for i := range recipients {
-		if _, ok := still[recipients[i].target]; ok {
+		if _, ok := slices.BinarySearch(fresh, recipients[i].target); ok {
 			kept = append(kept, recipients[i])
 		}
 	}
