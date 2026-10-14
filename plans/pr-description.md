@@ -1,95 +1,102 @@
-<!-- PR body for basecamp/once-campfire-go. Numbers: FINAL5 official acceptance
-     (tip 3305f44; the later review-fix commit is correctness-only). -->
+<!-- PR body for basecamp/once-campfire-go. Numbers: matched shared-harness run
+     2026-10-14 against the latest published Rust revision f9dca47. -->
 
-# Performance engine: matches the published table's shape, beats Rust on every row
+# Performance engine: every route beats the latest published Rust revision
 
-<!-- one-line summary: this branch adds a measured performance engine on top of the
-     port — owned HTTP loop, direct SQLite read/write lanes, piece cache, cable wake
-     path — with the same schema, storage keys, password hashes and Rails sessions. -->
+This branch adds a measured performance engine on top of the port — owned
+HTTP/1.1 loop, direct SQLite read/write lanes, generation-checked
+whole-response cache, batched write path with bounded WAL, cable wake path,
+compiled renderer — with the same schema, storage keys, password hashes and
+Rails-signed sessions. Every fast path has a rollback switch.
 
-## Results
+## Results — vs Rust (matched run)
 
-Measured with 16 concurrent clients, fresh seed, production images, 3 rotating
-reps, medians. Rails, Go and Rust re-measured here on the same machine with the
-official harness; Django, Laravel, Express and Elixir figures are the published
-numbers from this README's table (not re-measured).
+Shared verification harness (`basecamp/once-campfire-verification`, revision
+`ec02deb`), Rust at its latest published revision `f9dca47` (the response-cache
+revision), both runtime databases on tmpfs, c=16, 3 alternating rounds,
+8-second samples, every response contract-checked, zero errors:
 
-| HTTP workload (requests/sec) | Rails | [Django](https://github.com/basecamp/once-campfire-django) | [Laravel](https://github.com/basecamp/once-campfire-laravel) | [Express](https://github.com/basecamp/once-campfire-express) | [Elixir](https://github.com/basecamp/once-campfire-elixir) | Go (this branch) | [Rust](https://github.com/basecamp/once-campfire-rust) | Go vs Rust |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Room page | 222 | 170 | 164 | 559 | 722 | **96,568** | 36,771 | **2.63×** |
-| Messages page | 406 | 196 | 175 | 777 | 1,053 | **102,973** | 42,059 | **2.45×** |
-| Sidebar | 539 | 615 | 715 | 4,125 | 1,275 | **60,081** | 35,269 | **1.70×** |
-| Search | 382 | 315 | 305 | 1,294 | 1,156 | **132,259** | 33,951 | **3.90×** |
-| Post a message | 269 | 154 | 137 | 256 | 801 | **8,502** | 6,772 | **1.26×** |
+| HTTP workload (requests/sec) | Rust `f9dca47` | This branch | vs Rust |
+|---|---:|---:|---:|
+| Room page | 109,586 | **149,403** | **1.36×** |
+| Messages page | 106,497 | **192,759** | **1.81×** |
+| Sidebar | 124,369 | **166,116** | **1.34×** |
+| Search | 125,870 | **197,400** | **1.57×** |
+| Post a message | 8,235 | **15,817** | **1.92×** |
 
-Go is ahead of Rust by 1.26×–3.90× on every published row, at roughly half the
-CPU per request (38.3 vs 104 µs room page, 27.7 vs 97.5 µs search, 62.3 vs
-108 µs sidebar, 35.5 vs 89.7 µs messages, 296 vs 378 µs post).
+The local Rust image reproduces the published Rust figures within ~2–4%
+(published: 106,494 / 102,697 / 120,294 / 121,378 / 8,037), so the comparison
+is against a validated baseline. Raw receipts:
+`/tmp/opencode/matched-rust-go/summary.json` (also recorded in
+[`plans/validation.md`](plans/validation.md)).
 
-### Auxiliary routes
+### vs the C port (native, same pinning)
 
-| Route (req/s at c=16) | Rails | Rust | Go (this branch) | Go vs Rust |
-|---|---:|---:|---:|---:|
-| `/up` | 4,176 | 242,009 | **453,789** | **1.88×** |
-| Static CSS | 133,801 | 444,944 | **468,683** | **1.05×** |
-| Avatar | 98,680 | 386,903 | **390,494** | **1.01×** |
+| Route | C | This branch | vs C |
+|---|---:|---:|---:|
+| Room page | 156,170 | 146,722 | 0.94× |
+| Messages page | 161,041 | **188,938** | **1.17×** |
+| Sidebar | 172,087 | 165,135 | 0.96× |
+| Search | 171,762 | **198,252** | **1.15×** |
+| Post a message | 7,449 | **17,994** | **2.42×** |
 
-### Action Cable fan-out
-
-Max sustained msgs/s delivered to all clients, production images, 8 s windows:
-
-| Clients | Rust | Go (this branch) | Go vs Rust |
-|---:|---:|---:|---:|
-| 100 | 4,043 | **5,196** | **1.29×** |
-| 500 | 1,123 | 1,101 | parity (0.98×) |
-| 1,000 | 542 | 538 | parity (0.99×) |
-
-Saturated post→all p50 at 1,000 clients: 13.5 ms vs Rust's 16.1 ms.
+Ahead of C on messages, search and post; room and sidebar are near parity.
 
 ## How
 
 - **Owned HTTP/1.1 loop** (`internal/fastserve`, `CAMPFIRE_SERVER_LOOP=on`,
   default): vectorized request parsing, canonical-header fast path, precomposed
-  response heads, one writev per response, recorded replay lane for cacheable
-  GET/HEAD. TLS/ACME listeners stay on `net/http` + autocert unchanged.
-- **Direct SQLite lanes** (`internal/fastdb`, `CAMPFIRE_FASTDB_WRITE=on`,
-  default): CGO read lane with prepared-statement reuse and a write lane with
-  group commit and checkpoints moved off the writer; read-mostly pages serve
-  from memory-cached, version-keyed pieces.
-- **Piece cache** (`internal/piececache`): per-message fragments, sidebar and
-  whole re-renderable pages; pre-compressed pieces assembled into one
-  browser-safe single-member gzip body.
-- **Cable wake path** (`internal/cable`, `CAMPFIRE_CABLE_FAST=on`, default):
-  subscriber index, exact-payload frame cache, per-client fixed-ring queue with
-  a condition-variable writer park, batched vectored writes, generation-keyed
-  authorization memo.
-- **Routing/rendering**: compiled router and message renderer, arena
-  allocations and precomposed framing on the hot path; every fast path has an
-  `off` switch for A/B and rollback. (`CAMPFIRE_ENGINE` is a strangler
-  scaffold that currently owns no routes — it is a pass-through; the measured
-  wins come from the fast paths, not from route ownership.)
+  response heads, one writev per response, deadline calls eliminated where the
+  socket state already matches.
+- **Whole-response cache** (`CAMPFIRE_RESPONSE_CACHE_MB`, 64 MiB default) for
+  room, messages and search: completed responses stored as their exact wire
+  bytes; hits re-check the session and the observed SQLite generation before
+  serving; direct replay through the precomposed seam removes the header-map
+  and body-copy work. Sidebar keeps its own whole-page cache.
+- **Direct SQLite lanes** (`internal/fastdb`, CGO): read lane with fused
+  single-transition version and session reads; write lane with a batched
+  after-commit phase (commits per message drop from ~1.0 to ~0.01 at batch
+  scale), group commit, and checkpoints off the writer.
+- **Bounded WAL** (`CAMPFIRE_CHECKPOINT_PAGES`, 10,000 frames): a C WAL hook
+  tracks frames; the writer runs PASSIVE + RESTART between jobs, so a busy post
+  workload holds the WAL at ~40 MB instead of growing unbounded (measured
+  4.6 GB in 10 s without it). Refused restarts are counted, backed off and
+  never misreported.
+- **Cable wake path** (`CAMPFIRE_CABLE_FAST=on`, default): subscriber index,
+  exact-payload frame cache, per-client ring with a condition-variable writer,
+  batched vectored writes; the unread bump uses an active-subscription index
+  and one bulk authorization, with removed members skipped and revoked
+  sessions stopped.
+- **Runtime**: PGO build (`cmd/campfire/default.pgo`, `-pgo=auto`, falls back
+  cleanly when absent) and `CAMPFIRE_GOGC=200` as the shipped default
+  (rollback `CAMPFIRE_GOGC=100`); measured GC CPU per request halves, total
+  CPU per request −4.9% on the read workload for +13 MiB peak RSS.
 
 ## Correctness
 
-- Full `-race` suite (`bin/check`), browser workflow suite, and the screen
-  parity inventory: **178/178 applicable cells match the reference** on pixels
-  and accessibility (192 cells, 0 errors).
-- Go↔Rust interoperability: Rust-issued sessions accepted by Go and vice versa;
-  Rust renders and searches messages Go wrote (FTS).
-- Container and ACME checks pass on the production image
-  (`bin/check-container`, `bin/check-acme`).
+- Full `-race` suite (`bin/check`), browser workflows, and the screen parity
+  inventory: **178/178 applicable cells match the reference** on pixels and
+  accessibility (192 cells, 0 errors).
+- Go↔Rust interoperability: Rust-issued sessions accepted by Go and vice
+  versa; Rust renders and searches messages Go wrote (FTS).
+- Every cache observes external SQLite commits (`PRAGMA data_version` on a
+  pinned reader) and re-checks authorization where it serves user data;
+  admission happens only under the pre-read generation. Foreign-writer
+  revocation regressions exist for the search cache and the cable memo.
+- The write path keeps primary-commit-before-callback semantics, per-job
+  savepoint isolation, cancellation survival and a shutdown drain; WAL/NORMAL
+  durability is unchanged.
 
-## Measurement
+## Measurement notes and limitations
 
-Official harness (`once-campfire-elixir/bench/run`), production Docker images,
-fresh seed, 3 rotating reps. Raw evidence and full history:
-[`plans/validation.md`](plans/validation.md), with per-step profiles and
-negative results in [`plans/wrong.md`](plans/wrong.md).
-
-## Notes
-
-- `github.com/sebishogun/simdhttp` and `github.com/sebishogun/simd` are
-  MIT-licensed modules by this PR's author used only by the owned loop.
+- The first run of this comparison accidentally used Rust's pre-response-cache
+  revision (`743aa84`, whose numbers match the *old* published table within
+  2–3%); this body reports the corrected matched run against `f9dca47`.
+- Auxiliary rows (avatar, static CSS, `/up`) and the cable fan-out were not
+  re-measured in the matched session; the earlier measurements of those routes
+  are recorded in `plans/validation.md` and are not part of the headline claim.
 - Known deliberate differences from Rust (strict DOM/network specs, cache
   coherency scope, formatting) are listed under "Known differences" in the
   README.
+- `github.com/sebishogun/simdhttp` and `github.com/sebishogun/simd` are
+  MIT-licensed modules by this PR's author used only by the owned loop.
