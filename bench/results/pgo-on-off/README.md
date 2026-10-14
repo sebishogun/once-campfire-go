@@ -39,3 +39,26 @@ Generated tables are in [`report.md`](report.md); per-window samples and per-run
 [`raw.json`](raw.json); binary hashes and host identity in [`metadata.json`](metadata.json).
 Host load at the start of the run: 6.2 (1 min), shared host, `GODEBUG=gctrace=1` in every arm,
 per-request access log left on.
+
+## Provenance of the committed profile
+
+`cmd/campfire/default.pgo.provenance.json` identifies the binary that produced the profile from
+that binary's own `go version -m` output (`binary.vcs_revision`, `binary.vcs_modified`,
+`binary.build_settings`, `binary.go_version_m`) rather than from the checkout, resolves and hashes
+the PGO input the binary was itself built with (`binary_pgo_input`), records the effective runtime
+settings from the server's startup log (`effective.gc_percent`, `effective.mem_limit`,
+`effective.cpus_allowed`) alongside the requested ones, and pins a content-addressed source
+identity for every file that goes into the build (`go_sources_sha256`, 787 files) plus the
+checkout's revision and diff hash.
+
+The identification was checked by profiling a binary built at another revision while the checkout
+was elsewhere: `bin/pgo-profile --binary /tmp/campfire-pgo …` (a build from `36bee91`, checkout at
+`ce7c42f`) reported `binary.vcs_revision = 36bee91…`, `binary.vcs_modified = true` and
+`binary.build_settings["-pgo"] = "default.pgo"` — the binary's stamp, not the checkout's — with
+`binary_pgo_input.sha256` resolving to the profile that binary had been built with.
+
+One limitation, by construction: the manifest pins the profile file it just wrote (which matches
+the committed tree) but cannot pin its own output file, so the pinned hash of
+`cmd/campfire/default.pgo.provenance.json` is the previous file's, or absent on the first run.
+Everything else in `go_sources_sha256` matches the tree it was collected from.
+
