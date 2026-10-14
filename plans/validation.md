@@ -959,8 +959,11 @@ byte-for-byte; authorization, encodings, revocation, host/origin and
 transport deltas unchanged).
 
 Gates on `1b143bf`: `bin/check` (race + websocket) EXIT 0; Rust-Go interop
-PASS; production container (image `once-campfire-go:final2`) PASS; screen
-inventory and browser workflows pending.
+PASS; production container (image `once-campfire-go:final2`) PASS; browser
+workflows PASS (one flake on the first run, clean re-run); the full screen
+inventory reproduced the reference state exactly — 178/178 applicable pixels
+and accessibility, 0 capture errors, server DOM 19/192, live DOM 8/178,
+network 0/178, cable 177/178.
 
 **Fail-before coverage.** Sixteen regressions were executed against their
 pre-fix parent revisions and failed there — including the composition
@@ -974,3 +977,39 @@ against pre-fix revisions because they reference APIs the fixes introduced
 those the fail-before basis is feature absence plus code inspection, not
 execution against the old tree. An independent auditor flagged this as a
 coverage limitation; it is not a product defect.
+
+## Final measurement (2026-10-15, train `1b143bf`, image `once-campfire-go:final2`)
+
+Shared harness `ec02deb`, tmpfs runtime, c=16, 3 alternating rounds, 8 s
+samples, zero errors, zero invalid responses, 660,976 acknowledged writes
+verified:
+
+| Route | Rust `f9dca47` | Go `1b143bf` | Go/Rust |
+|---|---:|---:|---:|
+| room_show | 109,468 | 148,605 | 1.36x |
+| messages_page | 104,716 | 194,387 | 1.86x |
+| sidebar | 124,164 | 162,273 | 1.31x |
+| search | 126,215 | 201,560 | 1.60x |
+| post_message | 8,177 | 15,392 | 1.88x |
+
+Raw: `/tmp/opencode/matched-final/summary.json`.
+
+Native C comparison (same driver, CPUs 8-11 vs 12-15, 3 alternating rounds,
+zero errors):
+
+| Route | C | Go `1b143bf` | Go/C |
+|---|---:|---:|---:|
+| room_show | 156,727 | 147,748 | 0.94x |
+| messages_page | 173,380 | 197,124 | 1.14x |
+| sidebar | 168,853 | 163,809 | 0.97x |
+| search | 170,000 | 206,442 | 1.21x |
+| post_message | 7,456 | 17,073 | 2.29x |
+
+Raw: `/tmp/opencode/native-bench-20261014-232931/summary.json`.
+
+SIMD attribution arm: the same matched run with `GOSIMD=scalar` (the `simd`
+module's runtime scalar tier — same binary, SIMD kernels disabled) measured
+0.989-0.994 of the SIMD run on every route (room 147,029; messages 192,352;
+sidebar 160,902; search 200,363; post 15,252). The SIMD request parser
+contributes roughly one percent end-to-end; the rest is the engine
+architecture. Raw: `/tmp/opencode/matched-scalar/summary.json`.

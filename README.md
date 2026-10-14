@@ -619,17 +619,26 @@ their own licenses.
 
 Shared verification harness (`basecamp/once-campfire-verification`, revision
 `ec02deb`, same machine, tmpfs runtime, c=16, 3 rounds, zero errors) against
-Rust revision `f9dca47`, measuring Go train `34782d0` (historical, before the composition fixes):
+Rust revision `f9dca47`, measuring the final train `1b143bf` (image
+`once-campfire-go:final2`; the branch tip differs only in documentation):
 
-| Route | Rust `f9dca47` | Go `34782d0` | vs Rust |
+| Route | Rust `f9dca47` | Go `1b143bf` | vs Rust |
 |---|---:|---:|---:|
-| Room page | 109,586 | 149,403 | 1.36× |
-| Messages page | 106,497 | 192,759 | 1.81× |
-| Sidebar | 124,369 | 166,116 | 1.34× |
-| Search | 125,870 | 197,400 | 1.57× |
-| Post message | 8,235 | 15,817 | 1.92× |
+| Room page | 109,468 | 148,605 | 1.36× |
+| Messages page | 104,716 | 194,387 | 1.86× |
+| Sidebar | 124,164 | 162,273 | 1.31× |
+| Search | 126,215 | 201,560 | 1.60× |
+| Post message | 8,177 | 15,392 | 1.88× |
 
-In that run every route was ahead of Rust (1.34×-1.92×); the local Rust image reproduced
-the published Rust figures within ~2-4%. Against the C port at native tmpfs
-conditions that historical train led on messages (1.17×), search (1.15×) and post
-(2.42×), with room and sidebar near parity (0.94×/0.96×).
+Every route is ahead of Rust (1.31×-1.88×); the local Rust image reproduces the
+published Rust figures within ~2-4%, and the harness verified 660,976
+acknowledged writes with zero errors or invalid responses. Against the C port at
+native tmpfs conditions the final train leads on messages (1.14×), search
+(1.21×) and post (2.29×), with room and sidebar near parity (0.94×/0.97×).
+
+The earlier matched run on `34782d0` (before the composition, durability and
+conditional fixes) measured 149,403 / 192,759 / 166,116 / 197,400 / 15,817 —
+the same shape, within the run-to-run spread. A `GOSIMD=scalar` arm on the same
+image (SIMD kernels disabled at runtime) measured 0.989-0.994 of the SIMD run
+on every route: the SIMD request parser contributes about one percent
+end-to-end.

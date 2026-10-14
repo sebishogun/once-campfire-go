@@ -9,39 +9,38 @@ whole-response cache, batched write path with a WAL restart threshold, cable wak
 compiled renderer — with the same schema, storage keys, password hashes and
 Rails-signed sessions. Every fast path has a rollback switch.
 
-## Historical results — Go `34782d0` vs Rust (matched run)
-
-These measurements predate the final correctness and durability fixes. A
-quiet-host rerun of the current tree is pending; no current-tree speed claim.
+## Results — Go `1b143bf` vs Rust (matched run)
 
 Shared verification harness (`basecamp/once-campfire-verification`, revision
 `ec02deb`), Rust at its latest published revision `f9dca47` (the response-cache
 revision), both runtime databases on tmpfs, c=16, 3 alternating rounds,
-8-second samples, every response contract-checked, zero errors:
+8-second samples, every response contract-checked, zero errors, 660,976
+acknowledged writes verified (image `once-campfire-go:final2`, built from the
+measured revision; the branch tip differs only in documentation):
 
-| HTTP workload (requests/sec) | Rust `f9dca47` | Go `34782d0` | vs Rust |
+| HTTP workload (requests/sec) | Rust `f9dca47` | Go `1b143bf` | vs Rust |
 |---|---:|---:|---:|
-| Room page | 109,586 | **149,403** | **1.36×** |
-| Messages page | 106,497 | **192,759** | **1.81×** |
-| Sidebar | 124,369 | **166,116** | **1.34×** |
-| Search | 125,870 | **197,400** | **1.57×** |
-| Post a message | 8,235 | **15,817** | **1.92×** |
+| Room page | 109,468 | **148,605** | **1.36×** |
+| Messages page | 104,716 | **194,387** | **1.86×** |
+| Sidebar | 124,164 | **162,273** | **1.31×** |
+| Search | 126,215 | **201,560** | **1.60×** |
+| Post a message | 8,177 | **15,392** | **1.88×** |
 
 The local Rust image reproduces the published Rust figures within ~2–4%
 (published: 106,494 / 102,697 / 120,294 / 121,378 / 8,037), so the comparison
 is against a validated baseline. Raw receipts:
-`/tmp/opencode/matched-rust-go/summary.json` (also recorded in
+`/tmp/opencode/matched-final/summary.json` (also recorded in
 [`plans/validation.md`](plans/validation.md)).
 
 ### vs the C port (native, same pinning)
 
-| Route | C | Go `34782d0` | vs C |
+| Route | C | Go `1b143bf` | vs C |
 |---|---:|---:|---:|
-| Room page | 156,170 | 146,722 | 0.94× |
-| Messages page | 161,041 | **188,938** | **1.17×** |
-| Sidebar | 172,087 | 165,135 | 0.96× |
-| Search | 171,762 | **198,252** | **1.15×** |
-| Post a message | 7,449 | **17,994** | **2.42×** |
+| Room page | 156,727 | 147,748 | 0.94× |
+| Messages page | 173,380 | **197,124** | **1.14×** |
+| Sidebar | 168,853 | 163,809 | 0.97× |
+| Search | 170,000 | **206,442** | **1.21×** |
+| Post a message | 7,456 | **17,073** | **2.29×** |
 
 Ahead of C on messages, search and post; C is faster on room and sidebar by median.
 
@@ -78,9 +77,17 @@ Ahead of C on messages, search and post; C is faster on room and sidebar by medi
 
 ## Correctness
 
-- Full `-race` suite; historical browser workflows and the screen parity
-  inventory: **178/178 applicable cells match the reference** on pixels and
-  accessibility (192 cells, 0 errors).
+- Full `-race` suite on the final tree (exit 0, including the nested WebSocket
+  suite); browser workflows pass; the final screen inventory reproduces the
+  reference parity state exactly — **178/178 applicable pixels and
+  accessibility**, 0 capture errors, and the same documented strict-DOM and
+  network deltas as the reference runs (server DOM 19/192, live DOM 8/178,
+  network 0/178, cable 177/178).
+- Conditional responses: weak entity-tag comparison and 304 validator
+  preservation verified byte-for-byte against `net/http` semantics; an
+  independent conformance differential on the final tree reports no
+  divergences outside the documented transport deltas (strict duplicate
+  Content-Length/Transfer-Encoding handling).
 - Go↔Rust interoperability: Rust-issued sessions accepted by Go and vice
   versa; Rust renders and searches messages Go wrote (FTS).
 - HTTP response, page, fragment, reference-window and four read caches carry
