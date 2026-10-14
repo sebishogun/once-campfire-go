@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/basecamp/once-campfire-go/internal/front"
 )
@@ -53,6 +54,34 @@ type cachedResponse struct {
 	// to the server (the map path). A hit reproduces the same choice so the
 	// wire framing is identical to the fresh response.
 	explicitLength bool
+	// head is the precomposed replay metadata: the exact header lines the
+	// fresh 200 emitted — the recorded head block verbatim when the fresh
+	// response was framed, the live map's sorted lines otherwise — with
+	// Content-Length and the front's X-Cache marker included. It is immutable
+	// and right-sized (cap == len), so no seam can splice into a shared entry.
+	// nil when the entry must take the map path (a body the server framed
+	// itself, or a map carrying a receiver-owned line).
+	head []byte
+	// head304 is the precomposed 304 replay block: the lines the fresh 304
+	// emitted from the head lane (the recorded no-cache block, or the route
+	// validator's cache-control/ETag block) with X-Cache baked in. nil never
+	// occurs; it is unused when the request is not conditionally fresh.
+	head304 []byte
+	// xcache is the front's X-Cache marker baked into head and head304. A hit
+	// whose live marker differs takes the map path, because the marker is a
+	// property of the request (the front's cache eligibility) and not of the
+	// stored bytes.
+	xcache string
+	// validator304 records that this route answers its conditional requests
+	// from its own validator before rendering (the messages page): the fresh
+	// 304 is that validator's head, not the recorded no-cache block. The hit
+	// reproduces the same flavor.
+	validator304 bool
+	// etag and lastModified are the stored validator, captured once at
+	// admission so a hit's conditional check needs no string->[]byte or
+	// http.ParseTime allocation.
+	etag         []byte
+	lastModified time.Time
 }
 type responseCache struct {
 	mu           sync.Mutex
@@ -67,6 +96,11 @@ type responseRound struct {
 	user             int64
 	keyed            bool
 	gzip, hit, flash bool
+	// validator304 marks a route whose conditional requests are answered by
+	// its own validator before rendering (the messages page): the fresh 304
+	// carries the validator's cache-control and ETag, and the hit must
+	// reproduce that head rather than the recorded no-cache one.
+	validator304 bool
 }
 
 func newResponseCache(limit int) *responseCache {
@@ -181,7 +215,12 @@ func (s *Server) beginResponseCache(r *http.Request) {
 	}
 	state := browserState(r)
 	state.load()
-	info.response = &responseRound{version: info.databaseVersion, gzip: encoding == "gzip", flash: state.values["flash"] != nil}
+	info.response = &responseRound{
+		version:      info.databaseVersion,
+		gzip:         encoding == "gzip",
+		flash:        state.values["flash"] != nil,
+		validator304: route.Endpoint == "messages#index",
+	}
 }
 
 // responseHit looks the completed response up. The key covers everything the
@@ -375,17 +414,29 @@ func appendResponseCacheKey(b []byte, info *requestInfo, r *http.Request, round 
 	return b
 }
 
-// serveCached writes a cache hit: the stored entity headers onto the live
-// writer, then the stored wire body through the response buffer's parts
-// channel (no body copy; finish computes Content-Length from the part and
-// answers conditional requests against the stored validator exactly like the
-// map path). Restoring the header map copies each stored value slice, so a hit
-// allocates once per header value — the zero-allocation envelope covers key
-// construction and lookup, not the response. A framed request skipped the
-// fixed security headers in ServeHTTP; they are restored here so the hit head
-// is byte-identical to the fresh response's.
+// serveCached writes a cache hit. A conditionally fresh request is answered
+// first with the 304 the fresh path produced (see serveCached304). Otherwise
+// the hit takes the direct-replay lane when the entry carries an immutable
+// head block (replayCached); failing that it restores the stored entity
+// headers onto the live writer and serves the stored wire body through the
+// response buffer's parts channel — no body copy; finish computes
+// Content-Length from the part and answers conditional requests against the
+// stored validator exactly like the map path. Restoring the header map copies
+// each stored value slice, so that fallback allocates once per header value.
+// A framed request skipped the fixed security headers in ServeHTTP; they are
+// restored here so the hit head is byte-identical to the fresh response's.
 func (s *Server) serveCached(entry *cachedResponse, w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
+	// The conditional check mirrors finish's notModified exactly (same
+	// If-None-Match token comparison, same If-Modified-Since branch); the
+	// stored validator was parsed at admission, so this costs no allocation.
+	if requestIsFresh(r, entry.etag, entry.lastModified) {
+		s.serveCached304(entry, w, r, h)
+		return
+	}
+	if s.replayCached(entry, w, r, h) {
+		return
+	}
 	for key, values := range entry.header {
 		h[key] = append([]string(nil), values...)
 	}
@@ -404,6 +455,111 @@ func (s *Server) serveCached(entry *cachedResponse, w http.ResponseWriter, r *ht
 	// body through. Headers and status were set above.
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(entry.body)
+}
+
+// replayCached emits a 200/HEAD hit through the precomposed seam when the
+// entry carries a replay head block. Every gate the fresh precomposed path
+// applies is applied here, in the same order: the lane's own flag, the live
+// X-Cache marker the baked block was rendered with, the chain's precomposed
+// receiver, the response policy's pass-through answer for the stored wire
+// coding, and the request-side gates (no Set-Cookie, unchanged session). The
+// entry's head block is right-sized and carries the spliced X-Cache line, so
+// the seam performs no copy: the shared entry is never written to. It reports
+// whether the hit was emitted.
+func (s *Server) replayCached(entry *cachedResponse, w http.ResponseWriter, r *http.Request, h http.Header) bool {
+	if !s.precomposed || entry.head == nil {
+		return false
+	}
+	if h.Get("X-Cache") != entry.xcache {
+		// The front's marker is a request property (its own cache eligibility)
+		// that can differ between the fill and the hit; the baked block would
+		// then emit the wrong value, so this hit takes the map path.
+		return false
+	}
+	buffered := findResponseBuffer(w)
+	if buffered == nil || findPrecomposedReceiver(w) == nil {
+		return false
+	}
+	if !precomposedFramingAllowed(w, entry.header.Get("Content-Encoding")) {
+		return false
+	}
+	if !precomposedEligible(r, h, browserStateIfAny(r)) {
+		return false
+	}
+	buffered.recordedHead = entry.head
+	buffered.recordedStatus = http.StatusOK
+	buffered.precomposed = true
+	buffered.parts = buffered.partsBuf[:1]
+	buffered.parts[0] = entry.body
+	// Mark the response as written exactly as the fresh framed path does: the
+	// session was checked unchanged, so its commit is a no-op, and the
+	// deferred session write must not emit a second head.
+	if sw, ok := w.(*sessionWriter); ok {
+		sw.written = true
+	} else {
+		buffered.status = http.StatusOK
+	}
+	s.responseReplays.Add(1)
+	return true
+}
+
+// serveCached304 writes a cache hit's 304. The fresh 304 is not the 200 head
+// with a different status: the recorded routes answer from finish's
+// notModified with a "no-cache" fallback and no entity headers, while the
+// messages page answers from its validator before rendering, with the
+// validator's cache-control and ETag. The entry records which flavor it was,
+// and the hit reproduces it: through the precomposed seam when the entry has
+// a 304 block and the request gates hold (the same lane the 200 uses), and
+// otherwise by setting exactly the map lines that flavor carries and letting
+// finish emit the 304 (the head is then the loop's map-path 304, byte for
+// byte).
+func (s *Server) serveCached304(entry *cachedResponse, w http.ResponseWriter, r *http.Request, h http.Header) {
+	buffered := findResponseBuffer(w)
+	if buffered == nil {
+		entry.apply304Map(h)
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	// The precomposed 304 lane mirrors the fresh framed branch, which only
+	// runs for a non-HEAD request (a HEAD 304 is composed on the map path).
+	if s.precomposed && r.Method != "HEAD" && h.Get("X-Cache") == entry.xcache && findPrecomposedReceiver(w) != nil {
+		if precomposedFramingAllowed(w, entry.header.Get("Content-Encoding")) && precomposedEligible(r, h, browserStateIfAny(r)) {
+			// The block carries every line this flavor's fresh 304 emits; the
+			// front's seam splices the live map's lines (the X-Cache marker is
+			// baked in, the coding is in the block) exactly as it did for the
+			// fresh framed 304.
+			buffered.recordedHead = entry.head304
+			buffered.recordedStatus = http.StatusNotModified
+			buffered.precomposed = true
+			// Same as the 200 lane: the session was checked unchanged, so the
+			// deferred session write must not run.
+			if sw, ok := w.(*sessionWriter); ok {
+				sw.written = true
+			} else {
+				buffered.status = http.StatusNotModified
+			}
+			s.responseReplays.Add(1)
+			return
+		}
+	}
+	entry.apply304Map(h)
+	buffered.status = http.StatusNotModified
+}
+
+// apply304Map sets the exact map lines this entry's fresh 304 carried, so the
+// map path composes the identical head: the recorded flavor's no-cache
+// fallback plus its content coding, or the validator flavor's cache-control
+// and ETag.
+func (e *cachedResponse) apply304Map(h http.Header) {
+	if e.validator304 {
+		h.Set("Cache-Control", e.header.Get("Cache-Control"))
+		h.Set("ETag", e.header.Get("ETag"))
+		return
+	}
+	h.Set("Cache-Control", "no-cache")
+	if encoding := e.header.Get("Content-Encoding"); encoding != "" {
+		h.Set("Content-Encoding", encoding)
+	}
 }
 
 // cacheResponse stores the completed response in the whole-response cache.
@@ -499,7 +655,25 @@ func (s *Server) cacheResponse(r *http.Request, w *responseBuffer) {
 		header.Add("Vary", "Accept-Encoding")
 	}
 	entry := &cachedResponse{digest: sha256.Sum256(key), key: bytes.Clone(key), version: round.version, body: bytes.Clone(wire), header: header, explicitLength: len(w.encoded) > 0 || w.encodedLength > 0 || len(w.parts) > 0}
-	entry.cost = cap(entry.body) + len(entry.key) + 1024
+	// The replay metadata: the exact head block the fresh response emitted,
+	// rendered once here so a hit does no map, sort or sanitize work and no
+	// header-value copy. It is only built for the responses whose framing is
+	// fully decided by an explicit Content-Length (the recorded/encoded
+	// paths); a body the server framed itself (chunked or inferred length)
+	// keeps the map path, which is the baseline shape the framing tests pin.
+	entry.validator304 = round.validator304 || !entry.explicitLength
+	entry.etag = append([]byte(nil), header.Get("ETag")...)
+	if modified := header.Get("Last-Modified"); modified != "" {
+		if parsed, err := http.ParseTime(modified); err == nil {
+			entry.lastModified = parsed
+		}
+	}
+	entry.xcache = h.Get("X-Cache")
+	entry.head304 = s.buildReplay304(header, entry.validator304, entry.xcache)
+	if entry.explicitLength {
+		entry.head = s.buildReplayHead(h, framedHead(w), len(wire), entry.xcache)
+	}
+	entry.cost = cap(entry.body) + len(entry.key) + 1024 + len(entry.head) + len(entry.head304)
 	for name, values := range header {
 		entry.cost += len(name)
 		for _, value := range values {

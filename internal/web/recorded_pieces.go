@@ -532,7 +532,7 @@ func (s *Server) writeRecordedPieces(w http.ResponseWriter, r *http.Request, sta
 		// path, whose notModified writes the 304 immediately with the
 		// restored headers.
 		if block := buffered.arena.carveBlock(2048); block != nil {
-			buffered.recordedHead = s.appendRecordedHead(block, etagBytes, "", "", 0, http.StatusNotModified)
+			buffered.recordedHead = s.appendRecordedHead(block, etagBytes, "", wireEncoding, 0, http.StatusNotModified)
 			buffered.precomposed = true
 			buffered.recordedEtag = etagBytes
 			buffered.recordedStatus = http.StatusNotModified

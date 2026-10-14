@@ -342,6 +342,19 @@ func recordedFetchWithExtra(t *testing.T, client *http.Client, server *httptest.
 // can prove engagement. The frozen clock keeps the render deterministic.
 func testResponseCachePair(t *testing.T) (*Server, *Server, *httptest.Server, *httptest.Server, *http.Cookie, database.User) {
 	t.Helper()
+	on, off, cookie, user := testResponseCacheApps(t)
+	onServer := httptest.NewServer(front.Deflate(on))
+	t.Cleanup(onServer.Close)
+	offServer := httptest.NewServer(front.Deflate(off))
+	t.Cleanup(offServer.Close)
+	return on, off, onServer, offServer, cookie, user
+}
+
+// testResponseCacheApps is testResponseCachePair without the httptest servers:
+// the replay tests wrap the two apps in their own front chain and serve them
+// through the owned loop, where the raw wire bytes can be compared verbatim.
+func testResponseCacheApps(t *testing.T) (*Server, *Server, *http.Cookie, database.User) {
+	t.Helper()
 	t.Setenv("CAMPFIRE_FROZEN_TIME", "2026-01-02T03:04:05Z")
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "test.sqlite3")
@@ -367,15 +380,11 @@ func testResponseCachePair(t *testing.T) (*Server, *Server, *httptest.Server, *h
 	}
 	t.Cleanup(off.Close)
 	t.Setenv("CAMPFIRE_RESPONSE_CACHE_MB", "")
-	onServer := httptest.NewServer(front.Deflate(on))
-	t.Cleanup(onServer.Close)
-	offServer := httptest.NewServer(front.Deflate(off))
-	t.Cleanup(offServer.Close)
 	user, err := db.Setup(context.Background(), "Owner", "owner@test", "digest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return on, off, onServer, offServer, newSessionCookie(t, secrets, db, user.ID), user
+	return on, off, newSessionCookie(t, secrets, db, user.ID), user
 }
 
 // compareEntityExchange requires the cache-on and cache-off exchanges to be

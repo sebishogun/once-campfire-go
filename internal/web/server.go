@@ -140,20 +140,26 @@ type Server struct {
 	recordedAssemblies     atomic.Int64
 	recordedShellFallbacks atomic.Int64
 	recordedShellWarned    atomic.Bool
-	Webhooks               *integrations.WebhookClient
-	Jobs                   *jobs.Runner
-	Push                   *integrations.PushSender
-	Unfurler               *integrations.Unfurler
-	Storage                *storage.Store
-	Cable                  *cable.Hub
-	DB                     *database.DB
-	Secrets                *rails.Secrets
-	Secure                 bool
-	mux                    *router
-	templates              *template.Template
-	attemptsMu             sync.Mutex
-	attempts               map[string]attempt
-	dummyHash              []byte
+	// responseReplays counts whole-response-cache hits emitted through the
+	// precomposed replay lane (a 200/HEAD body or a 304), so tests and
+	// benchmarks can assert the lane engaged before timing rather than
+	// measuring the map-path fallback.
+	responseReplays atomic.Int64
+
+	Webhooks   *integrations.WebhookClient
+	Jobs       *jobs.Runner
+	Push       *integrations.PushSender
+	Unfurler   *integrations.Unfurler
+	Storage    *storage.Store
+	Cable      *cable.Hub
+	DB         *database.DB
+	Secrets    *rails.Secrets
+	Secure     bool
+	mux        *router
+	templates  *template.Template
+	attemptsMu sync.Mutex
+	attempts   map[string]attempt
+	dummyHash  []byte
 }
 type attempt struct {
 	Count int

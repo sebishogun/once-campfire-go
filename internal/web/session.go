@@ -45,6 +45,14 @@ func (s *browserSession) load() {
 func browserState(r *http.Request) *browserSession {
 	return r.Context().Value(browserSessionKey{}).(*browserSession)
 }
+
+// browserStateIfAny is browserState without the panic: a chain that never
+// installed the browser session (a bench writer, a direct serveCached test)
+// answers as if there were none, which is what precomposedEligible expects.
+func browserStateIfAny(r *http.Request) *browserSession {
+	state, _ := r.Context().Value(browserSessionKey{}).(*browserSession)
+	return state
+}
 func (s *browserSession) set(key string, value any) {
 	s.load()
 	if !reflect.DeepEqual(s.values[key], value) {

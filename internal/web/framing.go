@@ -1,9 +1,12 @@
 package web
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"net/http"
 	"strconv"
+
+	"github.com/basecamp/once-campfire-go/internal/fastserve"
 )
 
 // This file is the ENGINE-49 precomposed-framing path for recorded responses.
@@ -141,9 +144,16 @@ func (s *Server) appendRecordedHead(dst []byte, etag []byte, lastModified string
 	if status == http.StatusNotModified {
 		// The map path's 304 is composed at finish from the restored map:
 		// the finish-time Cache-Control fallback ("no-cache"), the security
-		// headers, Date and the close header — no ETag, Vary or entity
-		// headers. Replicate that head exactly.
+		// headers, Date and the close header — no ETag or Vary. It keeps the
+		// Content-Encoding (net/http's suppressedHeaders drops only
+		// Content-Type, Content-Length and Transfer-Encoding), so the framed
+		// 304 must keep it too or the two paths' 304s would differ.
 		dst = append(dst, "Cache-Control: no-cache\r\n"...)
+		if encoding != "" {
+			dst = append(dst, "Content-Encoding: "...)
+			dst = append(dst, encoding...)
+			dst = append(dst, '\r', '\n')
+		}
 		dst = append(dst, "Referrer-Policy: strict-origin-when-cross-origin\r\n"...)
 		return s.appendRecordedSecurity(dst)
 	}
@@ -228,4 +238,135 @@ func precomposedEligible(r *http.Request, h http.Header, state *browserSession) 
 // that simple at HTTP/1.1.
 func protoAtLeastHTTP11(r *http.Request) bool {
 	return r.ProtoMajor > 1 || r.ProtoMajor == 1 && r.ProtoMinor >= 1
+}
+
+// framedHead returns the head block the fresh response emitted through the
+// precomposed lane, or nil when the response did not frame (the map path, a
+// 304, or no recorded head). The whole-response cache uses it as the replay
+// head's source: the block is exactly what reached the wire (plus the seam's
+// spliced X-Cache marker, added by buildReplayHead).
+func framedHead(w *responseBuffer) []byte {
+	if w == nil || !w.precomposed || w.recordedStatus != http.StatusOK || len(w.recordedHead) == 0 {
+		return nil
+	}
+	return w.recordedHead
+}
+
+// buildReplayHead renders the immutable 200 replay head block for the
+// whole-response cache: the fresh response's exact header lines with
+// Content-Length and the front's X-Cache marker included, right-sized so no
+// seam can splice into the shared entry.
+//
+// framed is the head block the fresh response framed with (nil on the map
+// path). On the map path the block is rendered from the live map, which is
+// the same set of lines the loop's composeHead emits, in the same sorted
+// order and with the same value sanitization (fastserve.AppendHeaderLines is
+// the same pass). Content-Length is added because finish sets it after
+// admission on that path.
+//
+// A map carrying a line the receiver owns or the framing extras would
+// duplicate (Date, Transfer-Encoding, Connection, Trailer) has no replay
+// head: the hit takes the map path, byte-identically. A Set-Cookie line is
+// dropped instead: the head is the response shape a request with no cookie to
+// set emits, and any request that must emit one carries it on the live map,
+// where precomposedEligible refuses the replay.
+func (s *Server) buildReplayHead(live http.Header, framed []byte, length int, xcache string) []byte {
+	if framed == nil {
+		for _, name := range [...]string{"Date", "Transfer-Encoding", "Connection", "Trailer"} {
+			if _, ok := live[name]; ok {
+				return nil
+			}
+		}
+		h := make(http.Header, len(live)+1)
+		for name, values := range live {
+			if name == "Set-Cookie" {
+				continue
+			}
+			h[name] = values
+		}
+		h.Set("Content-Length", strconv.Itoa(length))
+		return rightSized(fastserve.AppendHeaderLines(nil, h, nil))
+	}
+	block := make([]byte, len(framed), len(framed))
+	copy(block, framed)
+	if xcache != "" {
+		block = spliceHeadLine(block, "X-Cache", xcache)
+	}
+	return rightSized(block)
+}
+
+// buildReplay304 renders the immutable 304 replay block. The recorded flavor
+// is the head lane's own 304 (Cache-Control: no-cache, the response's content
+// coding and the security headers). The validator flavor is the head the
+// route's validator emits before rendering: its cache-control and ETag, then
+// the security headers. The front's X-Cache marker is baked in like the 200
+// block's.
+func (s *Server) buildReplay304(header http.Header, validator bool, xcache string) []byte {
+	var block []byte
+	if validator {
+		block = s.appendValidator304(nil, header.Get("Cache-Control"), header.Get("ETag"))
+	} else {
+		block = s.appendRecordedHead(nil, nil, "", header.Get("Content-Encoding"), 0, http.StatusNotModified)
+	}
+	if xcache != "" {
+		block = spliceHeadLine(block, "X-Cache", xcache)
+	}
+	return rightSized(block)
+}
+
+// appendValidator304 renders the messages page's validator 304 head: the
+// validator's cache-control and ETag, then the process-constant security
+// headers, in the map path's sorted order. It is the head
+// messageValidator.apply's notModified produces before rendering.
+func (s *Server) appendValidator304(dst []byte, cacheControl, etag string) []byte {
+	dst = append(dst, "Cache-Control: "...)
+	dst = append(dst, cacheControl...)
+	dst = append(dst, '\r', '\n')
+	dst = append(dst, "Etag: "...)
+	dst = append(dst, etag...)
+	dst = append(dst, '\r', '\n')
+	dst = append(dst, "Referrer-Policy: strict-origin-when-cross-origin\r\n"...)
+	return s.appendRecordedSecurity(dst)
+}
+
+// spliceHeadLine inserts one rendered "Name: value\r\n" line into a head block
+// sorted by canonical header name and returns the extended block. It is used
+// at admission (once per entry) to bake the front's X-Cache marker into a
+// replay block, so the per-hit seam never has to splice — and never writes
+// into the shared entry. The caller guarantees the line is absent.
+func spliceHeadLine(head []byte, name, value string) []byte {
+	var lineBuf [80]byte
+	line := append(lineBuf[:0], name...)
+	line = append(line, ':', ' ')
+	line = append(line, value...)
+	line = append(line, '\r', '\n')
+	at := len(head)
+	for i := 0; i < len(head); {
+		end := bytes.IndexByte(head[i:], '\n')
+		if end < 0 {
+			break
+		}
+		end += i + 1
+		if colon := bytes.IndexByte(head[i:end], ':'); colon >= 0 && bytes.Compare(head[i:i+colon], line[:len(name)]) > 0 {
+			at = i
+			break
+		}
+		i = end
+	}
+	grown := make([]byte, 0, len(head)+len(line))
+	grown = append(grown, head[:at]...)
+	grown = append(grown, line...)
+	return append(grown, head[at:]...)
+}
+
+// rightSized returns b with cap == len. A replay block must be exactly sized:
+// the front's seam inserts a missing line in place when the block has spare
+// capacity, which would write into the shared cache entry.
+func rightSized(b []byte) []byte {
+	if cap(b) == len(b) {
+		return b
+	}
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
 }
