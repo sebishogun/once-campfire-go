@@ -193,9 +193,14 @@ class CheckoutDirtyPaths(unittest.TestCase):
     must not look like a modified source tree."""
 
     STATUS = ' M bin/build\n M cmd/campfire/default.pgo\n?? cmd/campfire/default.pgo.provenance.json\n'
+    # `text()` strips the whole output, so the first line loses its leading space.
+    STRIPPED = 'M bin/build\n M cmd/campfire/default.pgo\n'
 
     def test_the_profile_and_its_provenance_are_excluded(self):
         self.assertEqual(pgo.dirty_paths(self.STATUS), ['bin/build'])
+
+    def test_the_stripped_first_line_still_parses(self):
+        self.assertEqual(pgo.dirty_paths(self.STRIPPED), ['bin/build'])
 
     def test_a_real_source_change_still_counts(self):
         self.assertTrue(pgo.dirty_paths(' M internal/web/render.go\n'))
