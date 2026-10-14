@@ -44,6 +44,14 @@ type conn struct {
 	// busy is true while a request is being served; Shutdown closes only
 	// connections that are not busy (idle between requests).
 	busy atomic.Bool
+	// readArmed/writeArmed mirror the socket's deadline state in userspace,
+	// so a deadline call that would set the state it already has is skipped
+	// (the C port's shape: deadlines are bookkeeping, and only a change
+	// reaches the poller). Every deadline touch on this connection goes
+	// through setReadDeadline/setWriteDeadline, and the socket is owned by
+	// this loop until it is handed off, so the mirror cannot go stale.
+	readArmed  bool
+	writeArmed bool
 
 	// response side
 	resp *response
@@ -97,6 +105,43 @@ func newConn(s *Server, rwc net.Conn) *conn {
 	return c
 }
 
+// setReadDeadline arms the socket read deadline at t, or clears it when t is
+// zero. A zero t against an already-cleared deadline is the no-op net/http
+// pays for on every request (readRequest's SetReadDeadline(zero) when the
+// header timeout is unset, the idle clear, and the post-Peek clear); a
+// non-zero t is always applied, because the absolute instant moves with every
+// request. Skipping the redundant clear changes nothing a client can observe:
+// clearing a deadline that is already unset leaves the socket unset.
+func (c *conn) setReadDeadline(t time.Time) {
+	if t.IsZero() {
+		if !c.readArmed {
+			return
+		}
+		c.readArmed = false
+	} else {
+		c.readArmed = true
+	}
+	c.rwc.SetReadDeadline(t)
+}
+
+// setWriteDeadline is setReadDeadline for the write side. net/http clears the
+// write deadline after every response even when WriteTimeout is zero and it
+// never armed one; that clear is skipped here whenever this loop has no write
+// deadline armed, and kept whenever it has (a stale write deadline must not
+// outlive the response it bounded: reject() writes the 400/431 tail before the
+// next request arms its own deadline).
+func (c *conn) setWriteDeadline(t time.Time) {
+	if t.IsZero() {
+		if !c.writeArmed {
+			return
+		}
+		c.writeArmed = false
+	} else {
+		c.writeArmed = true
+	}
+	c.rwc.SetWriteDeadline(t)
+}
+
 // serve runs the keep-alive request loop for one connection.
 func (c *conn) serve() {
 	defer c.srv.connDone(c)
@@ -114,9 +159,9 @@ func (c *conn) serve() {
 			// net/http: idle deadline while waiting for the next request's
 			// first bytes; the idle clock starts after the response.
 			if d := c.srv.IdleTimeout; d > 0 {
-				c.rwc.SetReadDeadline(time.Now().Add(d))
+				c.setReadDeadline(time.Now().Add(d))
 			} else {
-				c.rwc.SetReadDeadline(time.Time{})
+				c.setReadDeadline(time.Time{})
 			}
 			if _, err := c.br.Peek(4); err != nil {
 				return // silent close: timeout, EOF, or reset
@@ -131,16 +176,23 @@ func (c *conn) serve() {
 		if c.lastMethod == "POST" {
 			c.skipLeadingCRLF()
 		}
-		// Header deadline covers the whole head; the body deadline takes
-		// over after the head is parsed. reqStart is net/http's whole-request
-		// clock: ReadTimeout covers head and body together, so a head that
-		// consumes the budget leaves the body only the remainder.
+		// net/http's readRequest deadline block, clock and all: both deadlines
+		// are measured from t0, so ReadTimeout covers head and body together
+		// and a head that consumes the budget leaves the body only the
+		// remainder. The header deadline goes on first; the whole-request
+		// deadline is re-armed only when it differs (net/http:
+		// `if !hdrDeadline.Equal(wholeReqDeadline)`), which with the default
+		// wiring — ReadHeaderTimeout falling back to ReadTimeout — is never,
+		// because both are t0+ReadTimeout.
+		t0 := time.Now()
+		var hdrDeadline, wholeReqDeadline time.Time
 		if d := c.srv.readHeaderTimeout(); d > 0 {
-			c.rwc.SetReadDeadline(time.Now().Add(d))
-		} else {
-			c.rwc.SetReadDeadline(time.Time{})
+			hdrDeadline = t0.Add(d)
 		}
-		reqStart := time.Now()
+		if d := c.srv.ReadTimeout; d > 0 {
+			wholeReqDeadline = t0.Add(d)
+		}
+		c.setReadDeadline(hdrDeadline)
 		consumed, err := c.readHead()
 		if err != nil {
 			if c.rejectHead(err) {
@@ -148,10 +200,8 @@ func (c *conn) serve() {
 			}
 			continue // a preface fragment: keep reading
 		}
-		if c.srv.ReadTimeout > 0 {
-			c.rwc.SetReadDeadline(reqStart.Add(c.srv.ReadTimeout))
-		} else {
-			c.rwc.SetReadDeadline(time.Time{})
+		if !hdrDeadline.Equal(wholeReqDeadline) {
+			c.setReadDeadline(wholeReqDeadline)
 		}
 		// Bytes the head parse pulled past the head end belong to the body
 		// (or the pipeline): serve them through the prefix reader before the
@@ -342,11 +392,11 @@ func (c *conn) serveRequest() bool {
 	res := c.newResponse(req)
 	c.resp = res
 	// Write deadline set before the handler runs, like net/http, so slow
-	// handlers expire when the response eventually writes.
+	// handlers expire when the response eventually writes. net/http arms
+	// this only when WriteTimeout is set (readRequest's defer); with no
+	// WriteTimeout there is nothing to arm and nothing to clear here.
 	if d := c.srv.WriteTimeout; d > 0 {
-		c.rwc.SetWriteDeadline(time.Now().Add(d))
-	} else {
-		c.rwc.SetWriteDeadline(time.Time{})
+		c.setWriteDeadline(time.Now().Add(d))
 	}
 	c.lastMethod = req.Method
 
@@ -371,8 +421,10 @@ func (c *conn) serveRequest() bool {
 	c.resp = nil
 	res.finish()
 	// net/http clears the write deadline after finishRequest; a keep-alive
-	// connection must not carry the previous request's deadline.
-	c.rwc.SetWriteDeadline(time.Time{})
+	// connection must not carry the previous request's deadline into the
+	// 400/431 tail that reject() may write before the next request arms its
+	// own. Skipped when this loop never armed one.
+	c.setWriteDeadline(time.Time{})
 	keep := res.shouldKeepAlive()
 	if !keep && res.requestBodyLimitHit {
 		// net/http finishes a connection whose body hit the limit (or was

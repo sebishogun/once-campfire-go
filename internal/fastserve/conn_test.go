@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -458,5 +459,96 @@ func TestShutdownClosesIdle(t *testing.T) {
 	}
 	if _, err := br.ReadByte(); err == nil {
 		t.Fatal("idle connection survived Shutdown")
+	}
+}
+
+// countingConn counts the deadline calls that reach the socket, so a test can
+// pin how much deadline traffic one keep-alive request costs.
+type countingConn struct {
+	net.Conn
+	reads  atomic.Int32
+	writes atomic.Int32
+}
+
+func (c *countingConn) SetReadDeadline(t time.Time) error {
+	c.reads.Add(1)
+	return c.Conn.SetReadDeadline(t)
+}
+
+func (c *countingConn) SetWriteDeadline(t time.Time) error {
+	c.writes.Add(1)
+	return c.Conn.SetWriteDeadline(t)
+}
+
+// deadlineBudget serves n sequential keep-alive requests on one counted
+// connection and returns the read/write deadline calls the loop made.
+func deadlineBudget(t *testing.T, tune func(*Server), n int) (int32, int32) {
+	t.Helper()
+	s := New(corpusHandler())
+	if tune != nil {
+		tune(s)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	cli, err := net.DialTimeout("tcp", l.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	raw, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc := &countingConn{Conn: raw}
+	c := newConn(s, cc)
+	s.wg.Add(1)
+	go c.serve()
+	cli.SetDeadline(time.Now().Add(10 * time.Second))
+	br := bufio.NewReader(cli)
+	for i := 0; i < n; i++ {
+		if _, err := cli.Write([]byte("GET /hello HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		if got := rawOneRead(t, br); !strings.Contains(got, "hello world") {
+			t.Fatalf("response %d: %q", i, got)
+		}
+	}
+	reads, writes := cc.reads.Load(), cc.writes.Load()
+	cli.Close() // unblocks the serve loop's wait for the next request
+	s.wg.Wait() // and the loop is done touching deadlines
+	return reads, writes
+}
+
+// TestDeadlineCallBudget pins the per-request deadline traffic against the
+// userspace mirror: net/http re-clears already-clear deadlines five times per
+// keep-alive request (readRequest's header clear, its whole-request clear, the
+// post-Peek clear, and conn.serve's two write clears), and only the sets that
+// actually change the socket reach it here.
+func TestDeadlineCallBudget(t *testing.T) {
+	// Every timeout zero (New()'s zero value, and the benchmark's server):
+	// the socket's deadlines are cleared from the fd's first instant, so a
+	// keep-alive request must not touch them at all.
+	if r, w := deadlineBudget(t, nil, 3); r != 0 || w != 0 {
+		t.Fatalf("zero-timeout server touched deadlines: read=%d write=%d", r, w)
+	}
+	// Every timeout set with ReadHeaderTimeout == ReadTimeout (front's
+	// wiring): per request the idle deadline and the header deadline are
+	// armed (2 reads), the whole-request deadline equals the header deadline
+	// so net/http's Equal guard skips it, and the write deadline is armed
+	// then cleared (2 writes). The first request has no idle wait, and the
+	// last read armed is the idle deadline the loop blocks on for a next
+	// request that never comes: 2 reads per request overall. Before the
+	// mirror this shape cost 9 reads (a third, redundant whole-request arm
+	// per keep-alive request) and the same 6 writes.
+	if r, w := deadlineBudget(t, func(s *Server) {
+		s.IdleTimeout = time.Hour
+		s.ReadTimeout = 30 * time.Second
+		s.ReadHeaderTimeout = 30 * time.Second
+		s.WriteTimeout = 30 * time.Second
+	}, 3); r != 6 || w != 6 {
+		t.Fatalf("armed-timeout server deadline calls: read=%d (want 6) write=%d (want 6)", r, w)
 	}
 }
