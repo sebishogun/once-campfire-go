@@ -39,7 +39,7 @@ measured speedup. The committed profile is a **bootstrap input**: it was collect
 default was therefore decided independently of PGO, on a PGO build of the same source.
 
 Generated tables are in [`report.md`](report.md); per-window samples and per-run totals in
-[`raw.json`](raw.json); binary hashes and host identity in [`metadata.json`](metadata.json).
+local-only `raw.json`; binary hashes and host identity in local-only `metadata.json`.
 Host load at the start of the run: 6.2 (1 min), shared host, `GODEBUG=gctrace=1` in every arm,
 per-request access log left on. The binary hashes above are the ones actually measured; the
 committed profile was regenerated afterwards by a fixed `bin/pgo-profile`, so a rebuild now
@@ -76,4 +76,3 @@ build of the same revision matches; anything else is reported as
 `checkout-only: not proven to describe the profiled binary` with the reasons. The same
 cross-revision check above produced exactly that status, listing the revision mismatch, the
 modified binary and the dirty checkout.
-

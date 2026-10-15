@@ -54,7 +54,7 @@ MB/s) until the disk fills.
 ## A/B: timed PASSIVE only (`CAMPFIRE_CHECKPOINT_PAGES=0`) vs growth ceiling (default 10000 frames)
 
 Interleaved pairs, ten seconds each, c=16, medians of three reps. Raw lines:
-[conc16.txt](conc16.txt), [conc1.txt](conc1.txt).
+Local-only: `conc16.txt`, `conc1.txt`.
 
 | Arm | req/s | p50 | p99 | WAL max | writer restarts / 10 s | checkpointer total |
 |---|---:|---:|---:|---:|---:|---:|
@@ -131,7 +131,7 @@ Under the normal workload (no pinned readers) the bounded timeout costs
 nothing: the same c=16 runs show **attempts 95/96, completed 95/96,
 incomplete 0**, worst single attempt 18–30 ms, total writer stall ~1 s per 10 s,
 WAL max ~40 MB, and `deferred` 6–16 checks where the checkpointer held the gate.
-Raw: [fix.txt](fix.txt).
+Local-only raw output: `fix.txt`.
 
 ## Second review fix (2026-10-14): pool borrowing, wording, counters
 
@@ -171,4 +171,4 @@ So ~95% of the writer's time inside an invocation is the PASSIVE backfill
 bound) and ~5% is the RESTART step — whose busy wait was ~20–30 µs, three
 orders of magnitude below the 250 ms setting. The setting matters only when a
 reader actually pins a slot, which is the case the pinned-reader test covers.
-Raw: [review2.txt](review2.txt).
+Local-only raw output: `review2.txt`.

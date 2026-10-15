@@ -6,8 +6,8 @@ measurement, but the numbers are corrected: the per-request figures below are al
 measurements, and the first version's were not (see [Correction](#correction-aligned-window-vs-whole-process-cpu--timed-requests)).
 
 Reproduce with `bench/gc-policy`; the generated tables are in [`report.md`](report.md), the
-per-window samples, per-run totals, binary hashes and log volumes in [`raw.json`](raw.json), the
-host and binary identity in [`metadata.json`](metadata.json), and the GC and startup lines of each
+per-window samples, per-run totals, binary hashes and log volumes in local-only `raw.json`, the
+host and binary identity in local-only `metadata.json`, and the GC and startup lines of each
 server run in `*.log`.
 
 ```sh

@@ -992,7 +992,7 @@ verified:
 | search | 126,215 | 201,560 | 1.60x |
 | post_message | 8,177 | 15,392 | 1.88x |
 
-Raw: `/tmp/opencode/matched-final/summary.json`.
+Local-only raw receipt: `/tmp/opencode/matched-final/summary.json`.
 
 Native C comparison (same driver, CPUs 8-11 vs 12-15, 3 alternating rounds,
 zero errors):
@@ -1005,11 +1005,14 @@ zero errors):
 | search | 170,000 | 206,442 | 1.21x |
 | post_message | 7,456 | 17,073 | 2.29x |
 
-Raw: `/tmp/opencode/native-bench-20261014-232931/summary.json`.
+Local-only raw receipt: `/tmp/opencode/native-bench-20261014-232931/summary.json`.
 
 SIMD attribution arm: the same matched run with `GOSIMD=scalar` (the `simd`
 module's runtime scalar tier — same binary, SIMD kernels disabled) measured
 0.989-0.994 of the SIMD run on every route (room 147,029; messages 192,352;
 sidebar 160,902; search 200,363; post 15,252). The SIMD request parser
 contributes roughly one percent end-to-end; the rest is the engine
-architecture. Raw: `/tmp/opencode/matched-scalar/summary.json`.
+architecture. Local-only raw receipt: `/tmp/opencode/matched-scalar/summary.json`.
+
+See [benchmark evidence notes](../bench/RESULTS.md#local-evidence-and-historical-reports)
+for receipt provenance limitations and the local-only raw artifact policy.

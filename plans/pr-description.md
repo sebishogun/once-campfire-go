@@ -28,9 +28,11 @@ measured revision; the branch tip differs only in documentation):
 
 The local Rust image reproduces the published Rust figures within ~2–4%
 (published: 106,494 / 102,697 / 120,294 / 121,378 / 8,037), so the comparison
-is against a validated baseline. Raw receipts:
+is against a validated baseline. Local-only raw receipts:
 `/tmp/opencode/matched-final/summary.json` (also recorded in
-[`plans/validation.md`](plans/validation.md)).
+[`plans/validation.md`](validation.md)). See the
+[evidence notes](../bench/RESULTS.md#local-evidence-and-historical-reports)
+for receipt provenance limitations.
 
 ### vs the C port (native, same pinning)
 

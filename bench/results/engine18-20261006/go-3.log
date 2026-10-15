@@ -1,7 +1,0 @@
-2026/10/06 22:38:40 INFO recorded response pieces enabled=true cache_mib=32
-2026/10/06 22:38:40 INFO fast reads enabled=true path=/home/sebishogun/Work/Development/once-campfire-go/bench/.work/go-3-s39pn3ch/database.sqlite3
-2026/10/06 22:38:40 INFO engine mode=on
-2026/10/06 22:38:40 INFO listening address=127.0.0.1:34901 tls=false
-2026/10/06 22:38:40 INFO listening address=[::]:51147 tls=false
-
-(process:1383921): VIPS-WARNING **: 22:39:16.001: unable to load "/usr/lib/vips-modules-8.18/vips-openslide.so" -- libopenslide.so.1: cannot open shared object file: No such file or directory
