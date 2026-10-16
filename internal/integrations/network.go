@@ -166,20 +166,20 @@ func HTTPClient(guarded bool, timeout time.Duration, resolver Resolver) *http.Cl
 		resolver = net.DefaultResolver
 	}
 	transport := &http.Transport{TLSHandshakeTimeout: timeout, ResponseHeaderTimeout: timeout, DisableKeepAlives: true, DisableCompression: true, DialContext: dialTimeout(timeout, guarded, resolver)}
-	return &http.Client{Transport: rubyTransport{transport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &http.Client{Transport: rubyTransport{next: transport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 // WebhookHTTPClient returns the webhook delivery client: the same timeouts
 // and delivery semantics as HTTPClient, with keep-alive connections so a bot
 // endpoint is dialed (and its DNS looked up) once instead of once per
-// delivery. The deadline wrapper still bounds every read and write on the
-// reused connection.
+// delivery. Acquiring a connection refreshes its read deadline for the new
+// request; the deadline wrapper still bounds every body read and write.
 func WebhookHTTPClient(timeout time.Duration, resolver Resolver) *http.Client {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
 	transport := &http.Transport{TLSHandshakeTimeout: timeout, ResponseHeaderTimeout: timeout, MaxIdleConnsPerHost: 2, IdleConnTimeout: 90 * time.Second, DisableCompression: true, DialContext: dialTimeout(timeout, false, resolver)}
-	return &http.Client{Transport: rubyTransport{transport}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &http.Client{Transport: rubyTransport{next: transport, requestReadTimeout: timeout}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 func PublicURL(ctx context.Context, resolver Resolver, value string) bool {
 	u, err := url.Parse(value)

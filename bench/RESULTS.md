@@ -2,7 +2,8 @@
 
 The [validation record](../plans/validation.md#final-measurement-2026-10-15-train-1b143bf-image-once-campfire-gofinal2)
 and [PR report](../plans/pr-description.md) retain the final measurements and
-limitations. No benchmarks were rerun for the artifact cleanup.
+limitations. No benchmarks were rerun for the artifact cleanup or the subsequent
+Copilot review fixes; the figures below do not measure those later changes.
 
 ## Final reported medians (requests/second)
 

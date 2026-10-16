@@ -3,6 +3,7 @@ package fastserve
 import (
 	"bytes"
 	"net"
+	"sync"
 )
 
 // prefixReplayConn serves bytes already read from a connection before the
@@ -54,9 +55,10 @@ func (c *prefixReplayConn) Read(p []byte) (int, error) {
 // connection off by pushing it here, and the internal net/http.Server's
 // Serve loop Accepts it. Close makes Accept return ErrClosed, ending Serve.
 type queueListener struct {
-	ch     chan net.Conn
-	closed chan struct{}
-	addr   net.Addr
+	ch        chan net.Conn
+	closed    chan struct{}
+	closeOnce sync.Once
+	addr      net.Addr
 }
 
 func newQueueListener(addr net.Addr) *queueListener {
@@ -87,11 +89,7 @@ func (l *queueListener) Accept() (net.Conn, error) {
 }
 
 func (l *queueListener) Close() error {
-	select {
-	case <-l.closed:
-	default:
-		close(l.closed)
-	}
+	l.closeOnce.Do(func() { close(l.closed) })
 	return nil
 }
 

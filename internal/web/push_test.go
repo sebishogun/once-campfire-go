@@ -3,8 +3,11 @@ package web
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,28 +56,45 @@ func TestPushSubscriptions(t *testing.T) {
 	}
 }
 
-// countingDNS records lookups so the test can observe the push job running
-// off the posting request.
+// countingDNS is shared by the outbox and crash-recovery tests.
 type countingDNS struct {
 	calls atomic.Int64
 }
 
-func (d *countingDNS) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+func (d *countingDNS) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
 	d.calls.Add(1)
 	return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
 }
 
+type blockingPushDNS struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (d *blockingPushDNS) LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error) {
+	d.once.Do(func() { close(d.entered) })
+	select {
+	case <-d.release:
+		return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // TestPushDeliveryRunsAsJob pins the reference's Room::PushMessageJob split:
 // a message post with Web Push configured enqueues the delivery and responds
-// immediately; the recipient/badge/delivery chain runs later on the job
-// worker (its first observable step is the endpoint resolve).
+// without waiting for the job worker's recipient/badge/delivery chain.
+// Resolution may start before the response, but must not hold up the POST.
 func TestPushDeliveryRunsAsJob(t *testing.T) {
 	app, server, cookie, user := testApp(t)
 	vapid, err := integrations.NewVAPID("mailto:test@test", "BCx3gcVTvPQLdipX32-QcGJFqD_JISKTIaluq6xoNDr7VEO8PPS2FeBiILP_CGOqB3XdSC-oIUljqCGPsh6Ar9U=", "5cnPvheAsV5bTdIu0Wcx6sSFUpCJe6zTX-zPM-g3vW4=")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dns := &countingDNS{}
+	dns := &blockingPushDNS{entered: make(chan struct{}), release: make(chan struct{})}
+	release := sync.OnceFunc(func() { close(dns.release) })
+	t.Cleanup(release)
 	app.Push = &integrations.PushSender{Resolver: dns, VAPID: vapid}
 	// The recipient query excludes the creator, so create a second member
 	// with a subscription (the audited helpers keep the registries honest).
@@ -98,21 +118,57 @@ func TestPushDeliveryRunsAsJob(t *testing.T) {
 		recipient.ID, "https://fcm.googleapis.com/fcm/send/test-endpoint", "key", "auth", "test"); err != nil {
 		t.Fatal(err)
 	}
-	before := dns.calls.Load()
-	response, data := perform(t, server, "POST", fmt.Sprintf("/rooms/%d/messages", rooms[0].ID),
-		"application/x-www-form-urlencoded",
-		strings.NewReader("message%5Bbody%5D=push%20me"), cookie)
-	if response.StatusCode != 200 {
-		t.Fatalf("post: %s %s", response.Status, data)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/rooms/%d/messages", server.URL, rooms[0].ID),
+		strings.NewReader("message%5Bbody%5D=push%20me"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The response must not depend on the push chain: the resolve (the job's
-	// first step) counts up only after the response is back.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if dns.calls.Load() > before {
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Origin", server.URL)
+	req.AddCookie(cookie)
+	type postResult struct {
+		status int
+		body   []byte
+		err    error
+	}
+	posted := make(chan postResult, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		response, err := server.Client().Do(req)
+		if err != nil {
+			posted <- postResult{err: err}
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		posted <- postResult{status: response.StatusCode, body: body, err: err}
+	}()
+	t.Cleanup(func() {
+		release()
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(2 * time.Second):
+			t.Error("posting request did not stop during cleanup")
+		}
+	})
+	select {
+	case <-dns.entered:
+	case <-ctx.Done():
+		t.Fatal("push job never entered endpoint resolution")
 	}
-	t.Fatal("push job never ran its delivery after the posting response")
+	select {
+	case result := <-posted:
+		if result.err != nil || result.status != http.StatusOK {
+			t.Fatalf("post: status %d, body %s, error %v", result.status, result.body, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("posting response waited for blocked push delivery")
+	}
+	release()
 }

@@ -58,6 +58,8 @@ no routes, so `on` (default), `off` and `force` are all pass-throughs and serve 
 the legacy chain unchanged. The switch exists for the differential harness and for promoting routes
 one at a time; the measured performance comes from the fast paths inside the handlers, not from route
 ownership.
+Compiled production route recognition is controlled separately by
+`CAMPFIRE_COMPILED_ROUTES` (default `on`; `off` restores the regex matcher).
 `CAMPFIRE_FRAGMENT_CACHE_MB` sizes the legacy in-process HTML fragment cache (default 32; `0`
 disables caching), which holds per-message fragments, the sidebar and the legacy recorded shells
 when the piece path is off; the engine piece cache reads the same key when routes migrate to it, so

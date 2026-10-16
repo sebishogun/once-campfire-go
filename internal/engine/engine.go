@@ -4,8 +4,9 @@
 // and path match an owned route is served by the engine; every other request
 // is handed to the legacy handler untouched (the "fallback"), which keeps the
 // byte-for-byte behavior of the port and gives the differential harness an
-// oracle. With an empty table — ENGINE-11 ships exactly that — the engine is a
-// pure pass-through.
+// oracle. Production deliberately leaves this scaffold's table empty. The
+// optimized router and handlers run inside the delegated web.Server under
+// independent switches, so CAMPFIRE_ENGINE is not their rollback switch.
 package engine
 
 import (
@@ -18,11 +19,11 @@ import (
 type Mode uint8
 
 const (
-	// ModeOff sends every request to the legacy handler. It is the A/B and
-	// rollback switch (CAMPFIRE_ENGINE=off).
+	// ModeOff disables ownership in this scaffold (CAMPFIRE_ENGINE=off).
+	// It does not disable the fast paths inside the delegated web handler.
 	ModeOff Mode = iota
-	// ModeOn is the production default: owned routes run in the engine and
-	// everything else falls back to legacy.
+	// ModeOn serves any owned routes and delegates everything else. Production
+	// registers no owned routes, so all modes currently delegate every request.
 	ModeOn
 	// ModeForce serves owned routes exactly as ModeOn does. It exists for
 	// tests and the differential harness, which pin "the engine must own this
@@ -104,7 +105,7 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// encoded slash, a non-canonical escape, a path normalizedPath would
 		// collapse — falls back to legacy rather than being served with
 		// different semantics. Dynamic patterns must replicate normalizedPath
-		// when ENGINE-16 lands.
+		// if production ownership is introduced.
 		if handler, ok := e.routes.lookup(r.Method, r.URL.EscapedPath()); ok {
 			e.serve(handler, w, r)
 			return
@@ -114,9 +115,8 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	e.legacy.ServeHTTP(w, r)
 }
 
-// serve runs one owned route. ENGINE-16 replaces the body with the fast
-// pipeline; for now an owned route is just its compiled handler, which owns
-// its own encoding.
+// serve runs one explicitly registered handler, which owns its encoding.
+// Production currently registers none; ownership probes are installed by tests.
 func (e *Engine) serve(handler http.Handler, w http.ResponseWriter, r *http.Request) {
 	handler.ServeHTTP(w, r)
 }

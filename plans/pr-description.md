@@ -16,7 +16,8 @@ Shared verification harness (`basecamp/once-campfire-verification`, revision
 revision), both runtime databases on tmpfs, c=16, 3 alternating rounds,
 8-second samples, every response contract-checked, zero errors, 660,976
 acknowledged writes verified (image `once-campfire-go:final2`, built from the
-measured revision; the branch tip differs only in documentation):
+reported measured revision). The branch also contains later Copilot review fixes
+that were not rebenchmarked; these are the earlier reported measurements:
 
 | HTTP workload (requests/sec) | Rust `f9dca47` | Go `1b143bf` | vs Rust |
 |---|---:|---:|---:|
@@ -48,6 +49,10 @@ Ahead of C on messages, search and post; C is faster on room and sidebar by medi
 
 ## How
 
+- **Routing**: the compiled production recognizer runs inside `web.Server`,
+  controlled by `CAMPFIRE_COMPILED_ROUTES`. The outer `CAMPFIRE_ENGINE` ownership
+  scaffold intentionally registers no production routes; it is not the rollback
+  switch for the optimized handlers.
 - **Owned HTTP/1.1 loop** (`internal/fastserve`, `CAMPFIRE_SERVER_LOOP=on`,
   default): vectorized request parsing, canonical-header fast path, precomposed
   response heads, one writev per response flush, deadline calls eliminated where the

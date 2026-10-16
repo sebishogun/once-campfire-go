@@ -1016,3 +1016,37 @@ architecture. Local-only raw receipt: `/tmp/opencode/matched-scalar/summary.json
 
 See [benchmark evidence notes](../bench/RESULTS.md#local-evidence-and-historical-reports)
 for receipt provenance limitations and the local-only raw artifact policy.
+
+## Copilot follow-up (2026-10-16)
+
+- `queueListener.Close` now closes its notification channel through a
+  listener-owned `sync.Once`. The concurrent-close regression failed on the
+  previous implementation and passes after the fix, including closed-listener
+  accept, handoff and repeated-close checks.
+- Webhook requests refresh the acquired connection's read deadline through a
+  request-local `GotConn` trace. Reused HTTP and TLS connections failed the
+  idle-then-delayed-response regression before the fix and pass afterwards.
+  Caller trace hooks remain composed, and stalled response bodies still time out
+  on the socket deadline rather than the longer request context.
+- The URL-bearing autolink benchmark resets its arena before each iteration.
+  The pre-fix bounded diagnostic retained 952,000 slab bytes after 1,000 calls,
+  versus 952 bytes with per-call resets. This was a storage-lifetime diagnostic,
+  not a throughput measurement.
+- `TestPushDeliveryRunsAsJob` blocks endpoint resolution and requires the real
+  posting response to finish while delivery is blocked. Waits and cleanup are
+  bounded; merely observing an eventual lookup is no longer the assertion.
+- Routing behavior is unchanged. `CAMPFIRE_ENGINE` remains the documented empty
+  ownership scaffold; `CAMPFIRE_COMPILED_ROUTES` controls the production matcher
+  inside `web.Server`. Comments and README now distinguish the two explicitly.
+
+Go 1.27.1 checks: formatting, `go vet -tags sqlite_fts5 ./...`, the full root
+`-race` suite with `sqlite_fts5`, and the nested WebSocket `-race` suite pass.
+All 20 runtime-lever unit tests pass. Each test/build invocation had an explicit
+timeout. Local receipts are under `tmp/copilot-review-20261016/`, including
+`regression-before.log`, `race-root-final.log`, `race-websocket.log`,
+`vet-final.log` and `runtime-levers.log`. An initial gate attempt included the
+throwaway overlay probes as a mixed-package directory; their local module now
+isolates them from root package discovery.
+
+No benchmarks were rerun for these changes. Earlier throughput tables remain
+historical measurements and are not measurements of the follow-up fixes.

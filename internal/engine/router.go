@@ -6,10 +6,10 @@ import "net/http"
 //
 // Keys are the exact r.URL.EscapedPath() strings the legacy router recognizes
 // (see Engine.ServeHTTP for the normalization caveat). The shape is
-// deliberately small. ENGINE-11 ships it empty (nothing is owned, so the
-// engine is a pure pass-through) and ENGINE-16 fills it with the real routes.
+// deliberately small. Production leaves it empty, so this scaffold is a pure
+// pass-through; the optimized production router and handlers live in web.
 // Lookups are exact method and escaped-path matches; dynamic patterns get their
-// own matching, including normalizedPath semantics, when the first one lands.
+// own matching, including normalizedPath semantics, if ownership is promoted.
 type routeTable struct {
 	byMethod map[string]map[string]http.Handler
 }
@@ -38,9 +38,9 @@ func (t *routeTable) lookup(method, path string) (http.Handler, bool) {
 	return handler, ok
 }
 
-// registerRoutes installs the compiled owned routes. ENGINE-11 owns nothing:
-// every request falls back to legacy. Dynamic routes (rooms, messages,
-// sidebar) land here starting with ENGINE-16, one differential-validated route
-// at a time.
+// registerRoutes intentionally installs no production routes. The compiled
+// recognizer and fast handlers run inside web.Server under their own switches
+// (including CAMPFIRE_COMPILED_ROUTES), not CAMPFIRE_ENGINE. Keep this scaffold
+// as a pass-through until a separately validated ownership migration is made.
 func registerRoutes(e *Engine) {
 }

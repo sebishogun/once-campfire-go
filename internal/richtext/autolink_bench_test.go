@@ -49,6 +49,7 @@ func BenchmarkAutoLinkWithURL(b *testing.B) {
 `
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		a.Reset()
 		if _, err := autoLink(a, text); err != nil {
 			b.Fatal(err)
 		}
