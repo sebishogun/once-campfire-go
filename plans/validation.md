@@ -1050,3 +1050,30 @@ isolates them from root package discovery.
 
 No benchmarks were rerun for these changes. Earlier throughput tables remain
 historical measurements and are not measurements of the follow-up fixes.
+
+### Subsequent Upgrade-handoff review
+
+Copilot review `5551241668` reported a new issue after the original five
+conversations were resolved. A preceding handler's disconnect observer could
+hold the first frame byte while the pipelined Upgrade headers were already
+buffered. Handoff transferred the head/read-ahead and buffered-reader bytes,
+then the raw socket, omitting the observer's saved byte.
+
+Handoff now joins the observer, appends its saved byte after the other consumed
+bytes, and clears the saved state before transferring ownership. The replay
+wrapper releases its prefix reader as soon as replay is complete and preserves
+the prefix across zero-length reads.
+
+Three regressions failed before these changes and pass afterwards:
+
+- A deterministic GET-to-Upgrade pipeline whose first masked-frame byte is
+  captured by the observer. Previously the receiver lost its leading `0x81`.
+- A consumed 64 KiB replay buffer must no longer be referenced by the wrapper.
+- A zero-length read must not consume the prefix or read from the socket.
+
+Existing observer replay, WebSocket round-trip, h2c and unwrap tests also pass.
+Formatting, vet, full root race tests with SQLite FTS5 and the nested WebSocket
+race suite pass under Go 1.27.1, all with explicit timeouts. Local evidence:
+`tmp/copilot-review-20261016/handoff-before.log`, `handoff-after.log`,
+`handoff-race-root.log`, `handoff-race-websocket.log` and `handoff-vet.log`.
+No benchmarks were rerun; no new throughput claim is made.

@@ -18,10 +18,9 @@ import (
 // the full consumed prefix.
 type prefixReplayConn struct {
 	net.Conn
+	// Drop the reader after replay so a long-lived upgraded connection
+	// does not retain the handshake and read-ahead buffer.
 	prefix *bytes.Reader
-	// done is closed once the prefix is exhausted, so the wrapper can stop
-	// consulting it; the wrapped conn is owned by the reader after that.
-	done bool
 }
 
 func newPrefixReplayConn(c net.Conn, prefix []byte) *prefixReplayConn {
@@ -38,16 +37,18 @@ func newPrefixReplayConn(c net.Conn, prefix []byte) *prefixReplayConn {
 func (c *prefixReplayConn) Unwrap() net.Conn { return c.Conn }
 
 func (c *prefixReplayConn) Read(p []byte) (int, error) {
-	if !c.done && c.prefix.Len() > 0 {
-		n, err := c.prefix.Read(p)
-		if err == nil && c.prefix.Len() == 0 {
-			c.done = true
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if c.prefix != nil {
+		n, _ := c.prefix.Read(p)
+		if c.prefix.Len() == 0 {
+			c.prefix = nil
 		}
 		if n > 0 {
 			return n, nil
 		}
 	}
-	c.done = true
 	return c.Conn.Read(p)
 }
 

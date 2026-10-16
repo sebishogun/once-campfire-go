@@ -370,13 +370,23 @@ func (c *conn) skipLeadingCRLF() {
 
 // handoff hands the connection to the internal net/http server, replaying
 // every byte this loop consumed: the parsed head, the bytes the head read
-// past its end, and whatever the buffered reader pulled from the wire.
+// past its end, whatever the buffered reader pulled from the wire, and a
+// byte held by the disconnect observer beyond those buffered bytes.
 func (c *conn) handoff(consumed int) {
+	c.observer.stop()
 	buffered, _ := c.br.Peek(c.br.Buffered())
-	prefix := make([]byte, 0, len(c.head)+len(buffered))
+	observed := 0
+	if c.observer.hasByte {
+		observed = 1
+	}
+	prefix := make([]byte, 0, len(c.head)+len(buffered)+observed)
 	prefix = append(prefix, c.head[:consumed]...)
 	prefix = append(prefix, c.head[consumed:]...)
 	prefix = append(prefix, buffered...)
+	if c.observer.hasByte {
+		prefix = append(prefix, c.observer.byte[0])
+		c.observer.hasByte = false
+	}
 	if c.srv.handoffConn(newPrefixReplayConn(c.rwc, prefix)) {
 		// The handoff server owns this connection now; the serve loop must
 		// not close it on the way out.
