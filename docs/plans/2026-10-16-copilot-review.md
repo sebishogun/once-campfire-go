@@ -56,3 +56,18 @@ frame lock to cover preparation, writing and cleanup; do not add another lock,
 allocation, or scratch copy per batch. Update the obsolete single-writer safety
 comment. Run bounded correctness gates, push, and reply to the Copilot review
 summary with the fix. No benchmarks or assistant attribution.
+
+## Pooled zstd native-memory lifetime (2026-10-19)
+
+Pooled compressors finish frames with `End`, not `Close`. GC can discard a
+`sync.Pool` entry and oversized buffers are deliberately not returned, leaving
+their C contexts without a reclamation path. Separate native ownership from
+the writer/output cycle, with idempotent release shared by explicit Close and
+an unreachable-writer cleanup. Use Go 1.27.1 `runtime.AddCleanup`, not a finalizer
+that can retain a cycle; keep the writer alive across native calls.
+
+Add bounded lifecycle tests for abandoned writers, dropped cyclic pool entries,
+explicit/error Close, and reachable End/Reset reuse. Establish reclamation tests
+fail before cleanup registration, then enable cleanup and rerun correctness
+gates. Cleanup must only free native memory, never finish a frame or write to an
+abandoned output. No per-Write/Reset cleanup registration and no benchmarks.

@@ -1110,3 +1110,36 @@ explicit timeouts. Local receipts: `tmp/copilot-review-20261019/batch-before.log
 
 No benchmarks were run and no throughput figures were changed. The earlier
 measurements do not measure this synchronization correction.
+
+## Pooled zstd native-memory reclamation (2026-10-19)
+
+Recorded compressors finish reusable frames with `End`, not `Close`. Their
+`sync.Pool` entries may be dropped by GC, and oversized entries are not returned
+to the pool. Previously, neither case reclaimed the retained `ZSTD_CCtx` after
+the Go writer became unreachable; explicit `Close` was the sole release path.
+
+Each encoder now has a separate, idempotent native-context owner and one
+`runtime.AddCleanup` registration. The cleanup argument and callback do not
+reference the writer or output, allowing a discarded compressor/writer/output
+cycle to be collected. Explicit `Close` stops the cleanup and frees through the
+same owner. `runtime.KeepAlive` protects native calls. Cleanup only frees memory:
+it never finishes an abandoned frame or calls the output writer.
+
+Before cleanup registration, both abandoned-writer and discarded-cyclic-pool
+regressions failed with their native contexts still allocated. They pass after
+registration. Additional tests cover no output writes during reclamation,
+reachable End/Reset reuse across GC with independently decoded frames, and
+explicit, repeated, and error-path Close. Native release is observed under the
+owner's mutex after the actual C free call, not inferred from RSS.
+
+Go 1.27.1 formatting, root vet, full root race tests with SQLite FTS5 and the
+nested WebSocket race suite pass, all with explicit timeouts. Local evidence:
+`tmp/copilot-review-20261019/zstd-before.log`, `zstd-after.log`,
+`zstd-race-root.log`, `zstd-race-websocket.log`, and `zstd-vet.log`.
+
+Ownership allocation and cleanup registration happen per encoder construction,
+including per-response streaming constructors; pooled Reset/Write reuse adds
+neither registration nor owner locking. GC cleanup is eventual, not a hard
+native-memory bound or a substitute for deterministic Close. No benchmarks were
+run or throughput figures changed. These lifetime checks do not constitute
+human maintainer validation of the PR's transport and persistence changes.

@@ -19,14 +19,39 @@ import "C"
 import (
 	"errors"
 	"io"
+	"runtime"
+	"sync"
 	"unsafe"
 )
 
+// contextOwner has no reference to Writer or its output. Keeping native
+// ownership separate permits reclamation even when a pooled writer and its
+// output buffer form a Go reference cycle.
+type contextOwner struct {
+	mu  sync.Mutex
+	ctx *C.ZSTD_CCtx
+}
+
+func (o *contextOwner) free() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.ctx != nil {
+		C.ZSTD_freeCCtx(o.ctx)
+		o.ctx = nil
+	}
+}
+
+// Writer owns one streaming encoder. It must not be copied or used concurrently.
+// Close finishes the frame and releases native memory deterministically.
+// Unreachable writers have a GC cleanup fallback that only frees native memory;
+// it does not finish an abandoned frame and is not a prompt-release guarantee.
 type Writer struct {
-	ctx    *C.ZSTD_CCtx
-	output io.Writer
-	buffer []byte
-	err    error
+	ctx     *C.ZSTD_CCtx
+	owner   *contextOwner
+	cleanup runtime.Cleanup
+	output  io.Writer
+	buffer  []byte
+	err     error
 }
 
 func NewWriter(output io.Writer) (*Writer, error) {
@@ -47,11 +72,16 @@ func NewWriterLevel(output io.Writer, level int) (*Writer, error) {
 		C.ZSTD_freeCCtx(ctx)
 		return nil, errors.New(C.GoString(C.ZSTD_getErrorName(code)))
 	}
-	return &Writer{ctx: ctx, output: output, buffer: make([]byte, int(C.ZSTD_CStreamOutSize()))}, nil
+	writer := &Writer{ctx: ctx, owner: &contextOwner{ctx: ctx}, output: output, buffer: make([]byte, int(C.ZSTD_CStreamOutSize()))}
+	// The cleanup owns only native state, not the writer or its output. It
+	// therefore remains collectible when a discarded pool entry forms a cycle.
+	writer.cleanup = runtime.AddCleanup(writer, (*contextOwner).free, writer.owner)
+	return writer, nil
 }
 func (w *Writer) step(p []byte, mode C.int) (int, bool, error) {
 	var consumed, written C.size_t
 	code := C.step(w.ctx, unsafe.Pointer(unsafe.SliceData(w.buffer)), C.size_t(len(w.buffer)), unsafe.Pointer(unsafe.SliceData(p)), C.size_t(len(p)), &consumed, &written, mode)
+	runtime.KeepAlive(w)
 	if C.ZSTD_isError(code) != 0 {
 		return int(consumed), false, errors.New(C.GoString(C.ZSTD_getErrorName(code)))
 	}
@@ -76,6 +106,7 @@ func (w *Writer) Reset(output io.Writer) error {
 		return io.ErrClosedPipe
 	}
 	code := C.ZSTD_CCtx_reset(w.ctx, C.ZSTD_reset_session_only)
+	runtime.KeepAlive(w)
 	if C.ZSTD_isError(code) != 0 {
 		return errors.New(C.GoString(C.ZSTD_getErrorName(code)))
 	}
@@ -127,7 +158,12 @@ func (w *Writer) Close() error {
 	if w.ctx == nil {
 		return w.err
 	}
-	defer func() { C.ZSTD_freeCCtx(w.ctx); w.ctx = nil }()
+	defer func() {
+		w.cleanup.Stop()
+		w.owner.free()
+		w.ctx = nil
+		runtime.KeepAlive(w)
+	}()
 	return w.End()
 }
 
