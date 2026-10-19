@@ -41,3 +41,18 @@ handoff/replay path, then run bounded correctness gates. Push, reply to the new
 thread, and resolve it only after the fix is present remotely. Do not rerun
 benchmarks or add attribution trailers. Copilot review requests require an
 upstream maintainer because the authenticated account has READ permission.
+
+## Concurrent batch-write contract (2026-10-19)
+
+The current hub's single batch writer does not make the library methods
+concurrent-safe. Shared payload/Rsv1 scratch is modified before `writeFrameMu`
+is acquired, and deferred scratch cleanup runs after the mutex is released.
+This violates `Conn`'s concurrency contract even though the hub avoids the race.
+
+Add a deterministic blocked-writer/cancelled-contender test and a real
+concurrent-writer wire-integrity test covering all batch entry points, normal
+prepared writes, and compression. Observe failures first. Move the existing
+frame lock to cover preparation, writing and cleanup; do not add another lock,
+allocation, or scratch copy per batch. Update the obsolete single-writer safety
+comment. Run bounded correctness gates, push, and reply to the Copilot review
+summary with the fix. No benchmarks or assistant attribution.

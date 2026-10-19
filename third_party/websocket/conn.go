@@ -60,6 +60,7 @@ type Conn struct {
 
 	// Batch write scratch: reused across WritePreparedBatch calls so a wake
 	// coalescing up to batchMaxFrames frames performs no allocations.
+	// Guarded by writeFrameMu from preparation through cleanup.
 	batchHeader []byte
 	batchRsv1   []bool
 	batchData   [][]byte

@@ -698,10 +698,10 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, user database.User, 
 				}
 				data, _ := json.Marshal(map[string]any{"type": "ping", "message": time.Now().Unix()})
 				frame := websocket.NewPreparedMessage(websocket.MessageText, data)
-				// A single prepared write, not a batch: the batch path reuses
-				// per-connection scratch before taking the frame lock, so it
-				// is reserved for the writer goroutine. The context bound
-				// keeps a stalled ping from holding this goroutine forever.
+				// A single prepared write needs no batch setup. Both paths
+				// serialize through the frame lock, including batch scratch
+				// preparation and cleanup. The context bound keeps a stalled
+				// ping from holding this goroutine forever.
 				timeout, stop := context.WithTimeout(ctx, cableWriteDeadline)
 				err := conn.WritePrepared(timeout, frame)
 				stop()

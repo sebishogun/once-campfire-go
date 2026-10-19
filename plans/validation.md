@@ -1077,3 +1077,36 @@ race suite pass under Go 1.27.1, all with explicit timeouts. Local evidence:
 `tmp/copilot-review-20261016/handoff-before.log`, `handoff-after.log`,
 `handoff-race-root.log`, `handoff-race-websocket.log` and `handoff-vet.log`.
 No benchmarks were rerun; no new throughput claim is made.
+
+## Concurrent WebSocket batch writes (2026-10-19)
+
+The batch extension violated `Conn`'s concurrent-method contract. Payload/Rsv1
+scratch was prepared before acquiring `writeFrameMu`; deferred cleanup also ran
+after unlocking. The hub's current single-writer usage avoids concurrent batch
+calls but is not a correctness guarantee for the methods themselves.
+
+`writePreparedBatchCore` now acquires the existing frame lock before any shared
+scratch access. Cleanup is deferred after unlock is deferred, so cleanup runs
+while the lock is still held. A contender that fails to acquire the lock leaves
+the active writer's state untouched. No second lock, scratch copy, or extra
+payload scan was introduced. First-use compression now occurs inside the frame
+critical section; its contention cost was not benchmarked.
+
+Fail-before/pass-after regressions:
+
+- With each of the three batch APIs held in a blocked transport write, a
+  cancelled competing batch previously cleared the active payload. Only the
+  `81 06` header reached the output instead of the complete `active` frame.
+- Concurrent context, deadline, retained-deadline and ordinary prepared writers
+  previously produced race reports and a slice-index panic. The new test audits
+  the exact message type/payload set with mixed batch sizes, both plain and
+  compressed. All cases pass after the fix under `-race`.
+
+Go 1.27.1 formatting, root and nested WebSocket vet, the full root race suite
+with SQLite FTS5, and the full nested WebSocket race suite pass. Commands had
+explicit timeouts. Local receipts: `tmp/copilot-review-20261019/batch-before.log`,
+`batch-after.log`, `race-root.log`, `race-websocket.log`, `vet-root.log`, and
+`vet-websocket.log`.
+
+No benchmarks were run and no throughput figures were changed. The earlier
+measurements do not measure this synchronization correction.

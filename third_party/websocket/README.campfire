@@ -8,7 +8,9 @@ Campfire additions (all under ENGINE-40, behind the hub's
   without context takeover. `WritePreparedBatch` coalesces up to
   `BatchMaxFrames` (64) prepared frames into one vectored network write
   (writev on TCP conns) with reused per-connection scratch; other connection
-  modes fall back to the ordinary writer.
+  modes fall back to the ordinary writer. All batch variants hold the existing
+  frame lock from scratch preparation through cleanup, preserving Conn's
+  concurrent-write contract without adding a second lock or scratch copy.
 - Header-first server reads: `accept.go` discards the hijacked 4KiB read
   buffer (replaying only the bytes net/http already buffered), so a freshly
   accepted socket holds no read buffer at all. The first frame read lazily

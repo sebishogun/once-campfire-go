@@ -159,12 +159,23 @@ func (c *Conn) WritePreparedBatchDeadlineRetained(deadline time.Time, msgs []*Pr
 }
 
 func (c *Conn) writePreparedBatchCore(ctx context.Context, deadline time.Time, retainDeadline bool, msgs []*PreparedMessage) (err error) {
+	var lockCtx context.Context = ctx
+	if lockCtx == nil {
+		lockCtx = context.Background()
+	}
+	err = c.writeFrameMu.lock(lockCtx)
+	if err != nil {
+		return err
+	}
+	defer c.writeFrameMu.unlock()
+	// Preparation and cleanup share the same lock as the wire write. In
+	// particular, a cancelled contender must not clear an active batch's
+	// scratch, and cleanup must finish before the next writer acquires it.
 	defer func() {
 		clear(c.batchData[:cap(c.batchData)])
 		clear(c.batchBufs[:cap(c.batchBufs)])
 	}()
-	// Resolve payloads (the compressed forms are shared and computed once)
-	// before taking the frame lock.
+	// Resolve payloads; their compressed forms are shared and computed once.
 	if cap(c.batchData) < len(msgs) {
 		c.batchData = make([][]byte, len(msgs))
 		c.batchRsv1 = make([]bool, len(msgs))
@@ -184,16 +195,6 @@ func (c *Conn) writePreparedBatchCore(ctx context.Context, deadline time.Time, r
 		}
 		c.batchData[i] = data
 	}
-
-	var lockCtx context.Context = ctx
-	if lockCtx == nil {
-		lockCtx = context.Background()
-	}
-	err = c.writeFrameMu.lock(lockCtx)
-	if err != nil {
-		return err
-	}
-	defer c.writeFrameMu.unlock()
 
 	defer func() {
 		if err != nil {
